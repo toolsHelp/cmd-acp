@@ -1,13 +1,17 @@
 {
   "name": "cmd-acp",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Expose Command Code (cmd) as an ACP (Agent Client Protocol) agent over stdio",
   "type": "module",
   "license": "MIT",
   "bin": {
     "cmd-acp": "dist/index.js"
   },
-  "files": ["dist", "README.md", "LICENSE"],
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
   "engines": {
     "node": ">=22"
   },
