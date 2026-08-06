@@ -1,0 +1,58 @@
+name: Release binaries
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: linux-x64
+          - os: ubuntu-24.04-arm
+            target: linux-arm64
+          - os: macos-14
+            target: darwin-x64
+          - os: macos-14
+            target: darwin-arm64
+          - os: windows-latest
+            target: windows-x64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+      - run: bun test
+      - name: Compile standalone binary
+        run: bun build src/index.ts --compile --target=bun-${{ matrix.target }} --outfile dist/cmd-acp-${{ matrix.target }}${{ matrix.os == 'windows-latest' && '.exe' || '' }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cmd-acp-${{ matrix.target }}
+          path: dist/cmd-acp-${{ matrix.target }}${{ matrix.os == 'windows-latest' && '.exe' || '' }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: chmod binaries
+        run: chmod +x artifacts/cmd-acp-*
+        shell: bash
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/cmd-acp-*
+          generate_release_notes: true

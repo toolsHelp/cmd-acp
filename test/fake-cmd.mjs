@@ -2,6 +2,8 @@
 // Fake Command Code CLI for tests. Supports:
 //   -p "<prompt>" --output-format json  → NDJSON stream (tool_running + result)
 //   --list-models                        → plain-text model list
+//   --resume <id>                        → echoes the resumed session id
+//   --plan / --effort <l>                → echoed in finalText
 // Honors --yolo / --model by including them in the emitted text.
 const args = process.argv.slice(2)
 
@@ -19,6 +21,9 @@ moonshotai/kimi-k3                   long-horizon coding & knowledge work
 let prompt = ""
 let yolo = false
 let model = ""
+let effort = ""
+let plan = false
+let resume = ""
 for (let i = 0; i < args.length; i++) {
   if (args[i] === "-p") {
     prompt = args[i + 1] ?? ""
@@ -31,6 +36,12 @@ for (let i = 0; i < args.length; i++) {
     model = args[i + 1] ?? ""
     i++
   } else if (args[i] === "--effort") {
+    effort = args[i + 1] ?? ""
+    i++
+  } else if (args[i] === "--plan") {
+    plan = true
+  } else if (args[i] === "--resume") {
+    resume = args[i + 1] ?? ""
     i++
   }
 }
@@ -51,5 +62,15 @@ emit({
   subtype: "success",
   sessionId: "fake-session-1",
   stopReason: "end_turn",
-  finalText: `Fake response to: ${prompt}${yolo ? " (yolo)" : ""}${model ? ` model=${model}` : ""}`,
+  usage: { totalTokens: 1234, inputTokens: 1000, outputTokens: 234 },
+  finalText: [
+    `Fake response to: ${prompt}`,
+    yolo ? "(yolo)" : "",
+    model ? `model=${model}` : "",
+    effort ? `effort=${effort}` : "",
+    plan ? "(plan)" : "",
+    resume ? `resumed=${resume}` : "",
+  ]
+    .filter(Boolean)
+    .join(" "),
 })

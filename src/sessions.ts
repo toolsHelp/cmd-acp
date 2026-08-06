@@ -7,8 +7,12 @@ export interface Session {
   config: CmdConfig
   /** AbortController for the in-flight `cmd` process (if any). */
   promptAbort: AbortController | null
-  /** Last sessionId returned by `cmd`'s result frame (for future --resume). */
+  /** Last sessionId returned by `cmd`'s result frame (for --resume). */
   cmdSessionId?: string
+  /** True once a prompt has been sent (enables --resume on later turns). */
+  hasPrompted: boolean
+  /** Cleanup for the materialized .mcp.json (MCP passthrough). */
+  cleanupMcp?: () => void
 }
 
 export class SessionStore {
@@ -16,7 +20,7 @@ export class SessionStore {
 
   create(cwd: string): Session {
     const id = randomUUID()
-    const session: Session = { id, cwd, config: {}, promptAbort: null }
+    const session: Session = { id, cwd, config: {}, promptAbort: null, hasPrompted: false }
     this.sessions.set(id, session)
     return session
   }
@@ -45,6 +49,12 @@ export class SessionStore {
       case "permission_mode":
         session.config.permissionMode = value === "yolo" ? "yolo" : "safe"
         break
+      case "mode":
+        if (value !== "plan" && value !== "normal") {
+          throw new Error("mode must be 'plan' or 'normal'")
+        }
+        session.config.mode = value
+        break
       default:
         throw new Error(`Unknown config option: ${configId}`)
     }
@@ -57,6 +67,7 @@ export class SessionStore {
       session.promptAbort.abort()
       session.promptAbort = null
     }
+    session?.cleanupMcp?.()
     this.sessions.delete(sessionId)
   }
 

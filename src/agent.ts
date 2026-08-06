@@ -2,13 +2,19 @@ import * as acp from "@agentclientprotocol/sdk"
 import type { SessionConfigOption } from "@agentclientprotocol/sdk"
 import { runCmdPrompt } from "./cmd-runner.js"
 import { listModels } from "./models.js"
+import { materializeMcp } from "./mcp.js"
 import { SessionStore } from "./sessions.js"
 
 export const AGENT_NAME = "cmd-acp"
 
+/** Default context window assumed for `cmd` runs (usage size). */
+const DEFAULT_CONTEXT_SIZE = 200_000
+
 /**
- * Build the ACP `configOptions` returned on session/new: a `model` select
- * (from `cmd --list-models`, cached) and a `permission_mode` select.
+ * Build the ACP `configOptions` returned on session/new:
+ * a `model` select (from `cmd --list-models`, cached), a `reasoning` select
+ * (--effort), a `permission_mode` select (safe/yolo), and a `mode` select
+ * (normal/plan).
  */
 async function buildConfigOptions(): Promise<SessionConfigOption[]> {
   const options: SessionConfigOption[] = []
@@ -36,6 +42,20 @@ async function buildConfigOptions(): Promise<SessionConfigOption[]> {
 
   options.push({
     type: "select",
+    id: "reasoning",
+    name: "Reasoning effort",
+    description: "Reasoning effort for the model (--effort)",
+    category: "thought_level",
+    currentValue: "medium",
+    options: [
+      { value: "low", name: "Low" },
+      { value: "medium", name: "Medium" },
+      { value: "high", name: "High" },
+    ],
+  })
+
+  options.push({
+    type: "select",
     id: "permission_mode",
     name: "Permission mode",
     description: "safe: Command Code blocks edits/shell (fail-closed) · yolo: allow all",
@@ -44,6 +64,19 @@ async function buildConfigOptions(): Promise<SessionConfigOption[]> {
     options: [
       { value: "safe", name: "Safe", description: "Block edits and shell commands" },
       { value: "yolo", name: "Yolo", description: "Allow edits and shell commands" },
+    ],
+  })
+
+  options.push({
+    type: "select",
+    id: "mode",
+    name: "Session mode",
+    description: "normal: full agent · plan: read-only exploration (--plan)",
+    category: "mode",
+    currentValue: "normal",
+    options: [
+      { value: "normal", name: "Normal", description: "Full agent with tools" },
+      { value: "plan", name: "Plan", description: "Read-only exploration" },
     ],
   })
 
@@ -63,6 +96,8 @@ export function registerHandlers(app: ReturnType<typeof acp.agent>, sessions: Se
     }))
     .onRequest("session/new", async (ctx) => {
       const session = sessions.create(ctx.params.cwd ?? process.cwd())
+      // MCP passthrough: materialize the injected servers into .mcp.json.
+      session.cleanupMcp = materializeMcp(session.cwd, ctx.params.mcpServers)
       const configOptions = await buildConfigOptions()
       return { sessionId: session.id, configOptions }
     })
@@ -90,10 +125,16 @@ export function registerHandlers(app: ReturnType<typeof acp.agent>, sessions: Se
           },
         })
 
+      // Continuity: from the 2nd turn onward, resume the previous cmd session.
+      const config = { ...session.config }
+      if (session.hasPrompted && session.cmdSessionId) {
+        config.resumeSessionId = session.cmdSessionId
+      }
+
       const outcome = await runCmdPrompt({
         prompt: text,
         cwd: session.cwd,
-        config: session.config,
+        config,
         signal: ctx.signal,
         onText: (chunk) => {
           void notifyText(chunk)
@@ -128,7 +169,28 @@ export function registerHandlers(app: ReturnType<typeof acp.agent>, sessions: Se
           })
         },
       })
+
+      session.hasPrompted = true
       if (outcome.cmdSessionId) session.cmdSessionId = outcome.cmdSessionId
+
+      // Usage: emit a usage_update so the client can track tokens. The real
+      // `cmd` result frame carries inputTokens/outputTokens (no totalTokens).
+      const usage = outcome.usage
+      const usedTokens =
+        usage?.totalTokens ??
+        (usage?.inputTokens !== undefined && usage?.outputTokens !== undefined
+          ? usage.inputTokens + usage.outputTokens
+          : undefined)
+      if (usedTokens !== undefined && usedTokens > 0) {
+        void ctx.client.notify(acp.methods.client.session.update, {
+          sessionId: ctx.params.sessionId,
+          update: {
+            sessionUpdate: "usage_update",
+            used: usedTokens,
+            size: DEFAULT_CONTEXT_SIZE,
+          },
+        })
+      }
 
       switch (outcome.stopReason) {
         case "cancelled":

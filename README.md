@@ -56,12 +56,12 @@ Or via npx:
 
 | ACP method | Behavior |
 |---|---|
-| `initialize` | ACP v1, `concurrent_sessions: false`, `load_session: false`, `terminal: false` |
-| `session/new` | Records `cwd`; lazy — no `cmd` spawn yet |
-| `session/prompt` | Runs `cmd -p "<text>" --output-format json` in the session `cwd` |
+| `initialize` | ACP v1, `load_session: false` |
+| `session/new` | Records `cwd`; materializes injected MCP servers into `.mcp.json`; returns `configOptions` |
+| `session/prompt` | Runs `cmd -p "<text>" --output-format json` in the session `cwd`; from turn 2 resumes via `--resume <cmdSessionId>` |
 | `session/cancel` | SIGINT to the child `cmd` process |
-| `session/close` | Kills child, clears session state |
-| `session/set_config_option` | `model` → `--model`, `reasoning` → `--effort`, `permission_mode` → `--permission-mode` |
+| `session/close` | Kills child, restores any pre-existing `.mcp.json`, clears session state |
+| `session/set_config_option` | `model` → `--model`, `reasoning` → `--effort`, `permission_mode` → `--yolo`, `mode` → `--plan` |
 
 ## Permissions
 
@@ -73,6 +73,8 @@ Or via npx:
   as a log, not as a prompt gate.
 - **`--yolo` mode**: opt-in via the `permission_mode` config option, for users
   who want edits and shell execution without a gate.
+- **Plan mode**: the `mode` config option (`plan`) runs `cmd -p --plan` for
+  read-only exploration.
 
 The client's own permission engine still applies at session level.
 
@@ -81,6 +83,26 @@ The client's own permission engine still applies at session level.
 - `model` — select a Command Code model (from `cmd --list-models`).
 - `reasoning` — `--effort` level (`low`, `medium`, `high`).
 - `permission_mode` — `safe` (default) or `yolo`.
+- `mode` — `normal` (default) or `plan` (read-only).
+
+## Features
+
+- **Conversation continuity**: each turn runs `cmd -p --resume <cmdSessionId>`
+  from the 2nd turn on, so Command Code keeps the full conversation context.
+- **Usage tracking**: emits ACP `usage_update` with the token usage from the
+  result frame, so clients can show token consumption.
+- **MCP passthrough**: MCP servers a client injects on `session/new` are written
+  to a temporary `.mcp.json` in the session cwd (restored on close), so Command
+  Code can use those tools.
+
+## Standalone binaries
+
+Pre-compiled standalone binaries (no Node runtime needed) are attached to each
+[GitHub Release](https://github.com/soycanopa/cmd-acp/releases):
+
+- `cmd-acp-darwin-arm64` / `cmd-acp-darwin-x64` (macOS)
+- `cmd-acp-linux-x64` / `cmd-acp-linux-arm64` (Linux)
+- `cmd-acp-windows-x64.exe` (Windows)
 
 ## Development
 

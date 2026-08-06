@@ -35,6 +35,31 @@ describe("runCmdPrompt", () => {
     delete process.env.CMD_BIN
   })
 
+  test("forwards --resume, --plan, and --effort flags", async () => {
+    process.env.CMD_BIN = fakeCmd
+    const outcome = await runCmdPrompt({
+      prompt: "continue",
+      cwd: process.cwd(),
+      config: {
+        resumeSessionId: "prev-123",
+        mode: "plan",
+        reasoning: "high",
+      },
+    })
+    expect(outcome.finalText).toContain("resumed=prev-123")
+    expect(outcome.finalText).toContain("(plan)")
+    expect(outcome.finalText).toContain("effort=high")
+    delete process.env.CMD_BIN
+  })
+
+  test("parses usage from result frame", async () => {
+    process.env.CMD_BIN = fakeCmd
+    const outcome = await runCmdPrompt({ prompt: "hi", cwd: process.cwd() })
+    expect(outcome.usage?.totalTokens).toBe(1234)
+    expect(outcome.usage?.inputTokens).toBe(1000)
+    delete process.env.CMD_BIN
+  })
+
   test("maps nonzero exit to error", async () => {
     process.env.CMD_BIN = "false" // exits 1, no stdout
     const outcome = await runCmdPrompt({ prompt: "x", cwd: process.cwd() })

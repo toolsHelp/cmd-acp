@@ -5,6 +5,10 @@ export interface CmdConfig {
   model?: string
   reasoning?: string
   permissionMode?: "safe" | "yolo"
+  /** Session mode: normal (default) or plan (read-only, --plan). */
+  mode?: "normal" | "plan"
+  /** Resume a previous Command Code session (--resume <sessionId>). */
+  resumeSessionId?: string
 }
 
 export interface CmdToolRunning {
@@ -19,6 +23,14 @@ export interface CmdEvent {
   event: CmdToolRunning
 }
 
+export interface CmdUsage {
+  totalTokens?: number
+  inputTokens?: number
+  outputTokens?: number
+  cacheReadTokens?: number
+  cacheWriteTokens?: number
+}
+
 export interface CmdResult {
   type: "result"
   subtype: "success" | "error" | "max_turns"
@@ -26,6 +38,7 @@ export interface CmdResult {
   stopReason?: string
   finalText?: string
   error?: string
+  usage?: CmdUsage | null
 }
 
 export type CmdLine = CmdEvent | CmdResult
@@ -40,6 +53,8 @@ export interface CmdRunOutcome {
   error?: string
   /** sessionId from the result frame, when present. */
   cmdSessionId?: string
+  /** Token usage from the result frame, when present. */
+  usage?: CmdUsage
 }
 
 /**
@@ -69,6 +84,8 @@ export async function runCmdPrompt(opts: {
   if (config.model) args.push("--model", config.model)
   if (config.reasoning) args.push("--effort", config.reasoning)
   if (config.permissionMode === "yolo") args.push("--yolo")
+  if (config.mode === "plan") args.push("--plan")
+  if (config.resumeSessionId) args.push("--resume", config.resumeSessionId)
 
   const child = spawn(resolveCmdBinary(), args, {
     cwd,
@@ -90,6 +107,7 @@ export async function runCmdPrompt(opts: {
   let stopReason: CmdRunOutcome["stopReason"] = "end_turn"
   let error: string | undefined
   let cmdSessionId: string | undefined
+  let usage: CmdUsage | undefined
 
   const stderr: string[] = []
 
@@ -109,6 +127,7 @@ export async function runCmdPrompt(opts: {
     }
     if (parsed.type === "result") {
       if (parsed.sessionId) cmdSessionId = parsed.sessionId
+      if (parsed.usage) usage = parsed.usage
       if (parsed.subtype === "error") {
         stopReason = "error"
         error = parsed.error ?? "Command Code returned an error"
@@ -150,7 +169,7 @@ export async function runCmdPrompt(opts: {
       sleep(0),
     ])
     if (signal?.aborted) {
-      return { finalText, tools, stopReason: "cancelled", cmdSessionId }
+      return { finalText, tools, stopReason: "cancelled", cmdSessionId, usage }
     }
     if ((stopReason as string) === "error") {
       const stderrText = stderr.join("").trim()
@@ -161,6 +180,7 @@ export async function runCmdPrompt(opts: {
         stopReason,
         error: error ?? (stderrText || fallback),
         cmdSessionId,
+        usage,
       }
     }
     // Handle nonzero exit / unparsed failure (e.g. auth error EXIT_AUTH_ERROR=3).
@@ -172,9 +192,10 @@ export async function runCmdPrompt(opts: {
         stopReason: "error",
         error: stderrText || `cmd exited with code ${exitCode}`,
         cmdSessionId,
+        usage,
       }
     }
-    return { finalText, tools, stopReason, cmdSessionId }
+    return { finalText, tools, stopReason, cmdSessionId, usage }
   } finally {
     signal?.removeEventListener("abort", abortHandler)
   }

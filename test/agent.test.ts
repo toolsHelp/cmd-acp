@@ -73,6 +73,8 @@ describe("cmd-acp ACP server (E2E over stdio)", () => {
       const ids = opts.map((o) => o.id)
       expect(ids).toContain("model")
       expect(ids).toContain("permission_mode")
+      expect(ids).toContain("reasoning")
+      expect(ids).toContain("mode")
       const model = opts.find((o) => o.id === "model")
       expect(model && model.type === "select" ? model.options.length : 0).toBeGreaterThan(0)
 
@@ -111,6 +113,45 @@ describe("cmd-acp ACP server (E2E over stdio)", () => {
       }
       await responsePromise
       expect(toolTitles).toContain("Read package.json")
+    })
+  })
+
+  test("emits usage_update and resumes the cmd session on the 2nd prompt", async () => {
+    await withClient(async (ctx) => {
+      await ctx.request("initialize", {
+        protocolVersion: acp.PROTOCOL_VERSION,
+      })
+      const session = await ctx.buildSession(process.cwd()).start()
+      const chunks: string[] = []
+
+      async function runTurn(prompt: string): Promise<string> {
+        const respPromise = session.prompt(prompt)
+        let message = await session.nextUpdate()
+        const turnChunks: string[] = []
+        while (message.kind !== "stop") {
+          if (message.kind === "session_update") {
+            const u = message.update
+            if (u?.sessionUpdate === "agent_message_chunk") {
+              turnChunks.push(blockText(u.content))
+            } else if (u?.sessionUpdate === "usage_update") {
+              expect(u.used).toBeGreaterThan(0)
+            }
+          }
+          message = await session.nextUpdate()
+        }
+        await respPromise
+        return turnChunks.join("")
+      }
+
+      // Turn 1: no --resume.
+      const first = await runTurn("first message")
+      expect(first).toContain("first message")
+      expect(first).not.toContain("resumed=")
+
+      // Turn 2: must pass --resume <cmdSessionId> for continuity.
+      const second = await runTurn("second message")
+      expect(second).toContain("second message")
+      expect(second).toContain("resumed=fake-session-1")
     })
   })
 })
