@@ -1,10 +1,21 @@
 #!/usr/bin/env node
-// Fake Command Code CLI for tests. Reads -p "<prompt>" and emits the same
-// NDJSON shape as `cmd -p --output-format json`:
-//   {"type":"event","event":{"type":"tool_running",...}}
-//   {"type":"result","subtype":"success",...}
+// Fake Command Code CLI for tests. Supports:
+//   -p "<prompt>" --output-format json  → NDJSON stream (tool_running + result)
+//   --list-models                        → plain-text model list
 // Honors --yolo / --model by including them in the emitted text.
 const args = process.argv.slice(2)
+
+if (args.includes("--list-models")) {
+  process.stdout.write(`Available models  ·  2 models
+
+Open Source
+
+deepseek/deepseek-v4-flash           fast hybrid-attention reasoning (default)
+moonshotai/kimi-k3                   long-horizon coding & knowledge work
+`)
+  process.exit(0)
+}
+
 let prompt = ""
 let yolo = false
 let model = ""

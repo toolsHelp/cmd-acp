@@ -67,6 +67,14 @@ describe("cmd-acp ACP server (E2E over stdio)", () => {
 
       const session = await ctx.buildSession(process.cwd()).start()
       expect(session.sessionId).toBeTruthy()
+      // session/new must expose model + permission_mode configOptions so the
+      // client (Circulo) shows the selectors.
+      const opts = session.newSessionResponse.configOptions ?? []
+      const ids = opts.map((o) => o.id)
+      expect(ids).toContain("model")
+      expect(ids).toContain("permission_mode")
+      const model = opts.find((o) => o.id === "model")
+      expect(model && model.type === "select" ? model.options.length : 0).toBeGreaterThan(0)
 
       const chunks: string[] = []
       const responsePromise = session.prompt("hello world")

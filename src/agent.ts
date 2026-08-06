@@ -1,8 +1,54 @@
 import * as acp from "@agentclientprotocol/sdk"
+import type { SessionConfigOption } from "@agentclientprotocol/sdk"
 import { runCmdPrompt } from "./cmd-runner.js"
+import { listModels } from "./models.js"
 import { SessionStore } from "./sessions.js"
 
 export const AGENT_NAME = "cmd-acp"
+
+/**
+ * Build the ACP `configOptions` returned on session/new: a `model` select
+ * (from `cmd --list-models`, cached) and a `permission_mode` select.
+ */
+async function buildConfigOptions(): Promise<SessionConfigOption[]> {
+  const options: SessionConfigOption[] = []
+
+  try {
+    const models = await listModels()
+    if (models.length > 0) {
+      options.push({
+        type: "select",
+        id: "model",
+        name: "Model",
+        description: "Command Code model for this session",
+        category: "model",
+        currentValue: models[0].id,
+        options: models.map((m) => ({
+          value: m.id,
+          name: m.name,
+          description: m.description,
+        })),
+      })
+    }
+  } catch {
+    // `cmd --list-models` failed (auth, missing binary) — omit the model select.
+  }
+
+  options.push({
+    type: "select",
+    id: "permission_mode",
+    name: "Permission mode",
+    description: "safe: Command Code blocks edits/shell (fail-closed) · yolo: allow all",
+    category: "mode",
+    currentValue: "safe",
+    options: [
+      { value: "safe", name: "Safe", description: "Block edits and shell commands" },
+      { value: "yolo", name: "Yolo", description: "Allow edits and shell commands" },
+    ],
+  })
+
+  return options
+}
 
 /**
  * Register all ACP handlers on the agent app.
@@ -15,9 +61,10 @@ export function registerHandlers(app: ReturnType<typeof acp.agent>, sessions: Se
         loadSession: false,
       },
     }))
-    .onRequest("session/new", (ctx) => {
+    .onRequest("session/new", async (ctx) => {
       const session = sessions.create(ctx.params.cwd ?? process.cwd())
-      return { sessionId: session.id }
+      const configOptions = await buildConfigOptions()
+      return { sessionId: session.id, configOptions }
     })
     .onRequest("session/close", (ctx) => {
       sessions.close(ctx.params.sessionId)
