@@ -8,15 +8,6 @@ import { fileURLToPath } from "node:url"
 const fakeCmd = fileURLToPath(new URL("./fake-cmd.mjs", import.meta.url))
 const bin = fileURLToPath(new URL("../dist/index.js", import.meta.url))
 
-/** Extract plain text from an ACP ContentBlock (text or image). */
-function blockText(content: unknown): string {
-  if (content && typeof content === "object") {
-    const c = content as { type?: string; text?: string }
-    if (c.type === "text" && typeof c.text === "string") return c.text
-  }
-  return ""
-}
-
 /** Spawn the compiled cmd-acp binary and drive it via a ClientContext. */
 async function withClient<T>(fn: (ctx: acp.ClientContext) => Promise<T>): Promise<T> {
   const child = spawn(process.execPath, [bin], {
@@ -38,7 +29,6 @@ async function withClient<T>(fn: (ctx: acp.ClientContext) => Promise<T>): Promis
       .client({ name: "cmd-acp-test" })
       .connectWith(stream, async (ctx) => fn(ctx))
   } finally {
-    // Graceful teardown: close stdin, wait briefly for exit, then SIGKILL.
     try {
       child.stdin.end()
     } catch {
@@ -55,6 +45,15 @@ async function withClient<T>(fn: (ctx: acp.ClientContext) => Promise<T>): Promis
       })
     })
   }
+}
+
+/** Extract plain text from an ACP ContentBlock (text or image). */
+function blockText(content: unknown): string {
+  if (content && typeof content === "object") {
+    const c = content as { type?: string; text?: string }
+    if (c.type === "text" && typeof c.text === "string") return c.text
+  }
+  return ""
 }
 
 describe("cmd-acp ACP server (E2E over stdio)", () => {
