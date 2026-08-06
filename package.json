@@ -1,0 +1,30 @@
+{
+  "name": "cmd-acp",
+  "version": "0.1.0",
+  "description": "Expose Command Code (cmd) as an ACP (Agent Client Protocol) agent over stdio",
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "cmd-acp": "dist/index.js"
+  },
+  "files": ["dist", "README.md", "LICENSE"],
+  "engines": {
+    "node": ">=22"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "bun build src/index.ts --outdir dist --target node && chmod +x dist/index.js",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@agentclientprotocol/sdk": "^1.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "bun-types": "^1.3.14",
+    "typescript": "^5.8.0"
+  }
+}

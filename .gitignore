@@ -1,0 +1,16 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+build/
+
+# Bun
+.bun/
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS
+.DS_Store
