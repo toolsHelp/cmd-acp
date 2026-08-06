@@ -23,6 +23,15 @@ async function withClient<T>(fn: (ctx: acp.ClientContext) => Promise<T>): Promis
     env: { ...process.env, CMD_BIN: fakeCmd },
     stdio: ["pipe", "pipe", "pipe"],
   })
+  let childErr = ""
+  child.stderr.setEncoding("utf8")
+  child.stderr.on("data", (c) => (childErr += c))
+  child.on("exit", (code, sig) => {
+    if (code !== 0 && code !== null) {
+      // eslint-disable-next-line no-console
+      console.error(`cmd-acp child exited code=${code} sig=${sig}\n${childErr}`)
+    }
+  })
   try {
     const stream = acp.ndJsonStream(Writable.toWeb(child.stdin), Readable.toWeb(child.stdout))
     return await acp
