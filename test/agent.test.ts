@@ -29,7 +29,22 @@ async function withClient<T>(fn: (ctx: acp.ClientContext) => Promise<T>): Promis
       .client({ name: "cmd-acp-test" })
       .connectWith(stream, async (ctx) => fn(ctx))
   } finally {
-    child.kill()
+    // Graceful teardown: close stdin, wait briefly for exit, then SIGKILL.
+    try {
+      child.stdin.end()
+    } catch {
+      // Already closed.
+    }
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(() => {
+        child.kill("SIGKILL")
+        resolve()
+      }, 1000)
+      child.once("exit", () => {
+        clearTimeout(timer)
+        resolve()
+      })
+    })
   }
 }
 
