@@ -12,9 +12,7 @@ export function registerHandlers(app: ReturnType<typeof acp.agent>, sessions: Se
     .onRequest("initialize", () => ({
       protocolVersion: acp.PROTOCOL_VERSION,
       agentCapabilities: {
-        concurrentSessions: false,
         loadSession: false,
-        terminal: false,
       },
     }))
     .onRequest("session/new", (ctx) => {

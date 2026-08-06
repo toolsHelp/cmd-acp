@@ -8,6 +8,15 @@ import { fileURLToPath } from "node:url"
 const fakeCmd = fileURLToPath(new URL("./fake-cmd.mjs", import.meta.url))
 const bin = fileURLToPath(new URL("../dist/index.js", import.meta.url))
 
+/** Extract plain text from an ACP ContentBlock (text or image). */
+function blockText(content: unknown): string {
+  if (content && typeof content === "object") {
+    const c = content as { type?: string; text?: string }
+    if (c.type === "text" && typeof c.text === "string") return c.text
+  }
+  return ""
+}
+
 /** Spawn the compiled cmd-acp binary and drive it via a ClientContext. */
 async function withClient<T>(fn: (ctx: acp.ClientContext) => Promise<T>): Promise<T> {
   const child = spawn(process.execPath, [bin], {
@@ -31,7 +40,7 @@ describe("cmd-acp ACP server (E2E over stdio)", () => {
         protocolVersion: acp.PROTOCOL_VERSION,
       })
       expect(init.protocolVersion).toBe(acp.PROTOCOL_VERSION)
-      expect(init.agentCapabilities?.concurrentSessions).toBe(false)
+      expect(init.agentCapabilities?.loadSession).toBe(false)
 
       const session = await ctx.buildSession(process.cwd()).start()
       expect(session.sessionId).toBeTruthy()
@@ -44,7 +53,7 @@ describe("cmd-acp ACP server (E2E over stdio)", () => {
           message.kind === "session_update" &&
           message.update?.sessionUpdate === "agent_message_chunk"
         ) {
-          chunks.push(message.update.content?.text ?? "")
+          chunks.push(blockText(message.update.content))
         }
         message = await session.nextUpdate()
       }
