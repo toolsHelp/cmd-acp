@@ -1,6 +1,6 @@
 {
   "name": "cmd-acp",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Expose Command Code (cmd) as an ACP (Agent Client Protocol) agent over stdio",
   "type": "module",
   "license": "MIT",
