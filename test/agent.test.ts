@@ -67,52 +67,88 @@ describe("cmd-acp ACP server (E2E over stdio)", () => {
 
       const session = await ctx.buildSession(process.cwd()).start()
       expect(session.sessionId).toBeTruthy()
-      // session/new must expose model + permission_mode configOptions so the
-      // client (Circulo) shows the selectors.
+      // session/new must expose the configOptions the client renders as its
+      // selectors: model, reasoning, and a single mode list.
       const opts = session.newSessionResponse.configOptions ?? []
       const ids = opts.map((o) => o.id)
       expect(ids).toContain("model")
-      expect(ids).toContain("permission_mode")
       expect(ids).toContain("reasoning")
       expect(ids).toContain("mode")
       const model = opts.find((o) => o.id === "model")
       expect(model && model.type === "select" ? model.options.length : 0).toBeGreaterThan(0)
+      // `yolo` must be reachable as a mode, otherwise a client can never
+      // enable edits/shell (there is no separate permission selector).
+      const mode = opts.find((o) => o.id === "mode")
+      const modeValues =
+        mode && mode.type === "select"
+          ? mode.options.flatMap((o) => ("value" in o ? [o.value] : []))
+          : []
+      expect(modeValues).toContain("yolo")
+      expect(modeValues).toContain("plan")
 
       const chunks: string[] = []
+      const thoughts: string[] = []
       const responsePromise = session.prompt("hello world")
       let message = await session.nextUpdate()
       while (message.kind !== "stop") {
-        if (
-          message.kind === "session_update" &&
-          message.update?.sessionUpdate === "agent_message_chunk"
-        ) {
-          chunks.push(blockText(message.update.content))
+        if (message.kind === "session_update") {
+          if (message.update?.sessionUpdate === "agent_message_chunk") {
+            chunks.push(blockText(message.update.content))
+          } else if (message.update?.sessionUpdate === "agent_thought_chunk") {
+            thoughts.push(blockText(message.update.content))
+          }
         }
         message = await session.nextUpdate()
       }
       const response = await responsePromise
       expect(response.stopReason).toBe("end_turn")
       expect(chunks.join("")).toContain("hello world")
+      // Reasoning must be surfaced separately, not merged into the answer.
+      expect(thoughts.join("")).toBe("Let me think about this.")
+      expect(chunks.join("")).not.toContain("Let me think")
     })
   })
 
-  test("maps tool_running to tool_call updates", async () => {
+  test("maps tool_queued/tool_hook_blocked to tool_call and tool_call_update", async () => {
     await withClient(async (ctx) => {
       await ctx.request("initialize", {
         protocolVersion: acp.PROTOCOL_VERSION,
       })
       const session = await ctx.buildSession(process.cwd()).start()
-      const toolTitles: string[] = []
+      const calls: { id: string; kind: string; title: string; status: string }[] = []
+      const updates: { id: string; status: string }[] = []
       const responsePromise = session.prompt("hello")
       let message = await session.nextUpdate()
       while (message.kind !== "stop") {
-        if (message.kind === "session_update" && message.update?.sessionUpdate === "tool_call") {
-          toolTitles.push(message.update.title ?? "")
+        if (message.kind === "session_update") {
+          const u = message.update
+          if (u?.sessionUpdate === "tool_call") {
+            calls.push({
+              id: u.toolCallId,
+              kind: u.kind ?? "",
+              title: u.title ?? "",
+              status: u.status ?? "",
+            })
+          } else if (u?.sessionUpdate === "tool_call_update") {
+            updates.push({ id: u.toolCallId, status: u.status ?? "" })
+          }
         }
         message = await session.nextUpdate()
       }
       await responsePromise
-      expect(toolTitles).toContain("Read package.json")
+
+      // Command Code's own id must be reused verbatim: a permission request
+      // looks up the tool snapshot by this id.
+      expect(calls).toHaveLength(1)
+      expect(calls[0].id).toBe("call_fake0001")
+      expect(calls[0].kind).toBe("read")
+      expect(calls[0].title).toBe("read_file: package.json")
+      expect(calls[0].status).toBe("in_progress")
+
+      // Not run with --yolo, so the tool is refused and must surface as failed.
+      expect(updates).toHaveLength(1)
+      expect(updates[0].id).toBe("call_fake0001")
+      expect(updates[0].status).toBe("failed")
     })
   })
 
@@ -152,6 +188,56 @@ describe("cmd-acp ACP server (E2E over stdio)", () => {
       const second = await runTurn("second message")
       expect(second).toContain("second message")
       expect(second).toContain("resumed=fake-session-1")
+    })
+  })
+
+  test("session/set_mode switches to yolo and enables --yolo", async () => {
+    await withClient(async (ctx) => {
+      await ctx.request("initialize", {
+        protocolVersion: acp.PROTOCOL_VERSION,
+      })
+      const session = await ctx.buildSession(process.cwd()).start()
+
+      // Clients expose session modes natively and call this method.
+      await ctx.request("session/set_mode", {
+        sessionId: session.sessionId,
+        modeId: "yolo",
+      })
+
+      const respPromise = session.prompt("go")
+      let message = await session.nextUpdate()
+      const chunks: string[] = []
+      while (message.kind !== "stop") {
+        if (message.kind === "session_update" && message.update?.sessionUpdate === "agent_message_chunk") {
+          chunks.push(blockText(message.update.content))
+        }
+        message = await session.nextUpdate()
+      }
+      await respPromise
+
+      // The fake CLI echoes --yolo, and with --yolo it no longer emits the
+      // blocked event.
+      expect(chunks.join("")).toContain("(yolo)")
+      expect(chunks.join("")).toContain("go")
+    })
+  })
+
+  test("rejects an unknown mode", async () => {
+    await withClient(async (ctx) => {
+      await ctx.request("initialize", {
+        protocolVersion: acp.PROTOCOL_VERSION,
+      })
+      const session = await ctx.buildSession(process.cwd()).start()
+      let failed = false
+      try {
+        await ctx.request("session/set_mode", {
+          sessionId: session.sessionId,
+          modeId: "nonsense",
+        })
+      } catch {
+        failed = true
+      }
+      expect(failed).toBe(true)
     })
   })
 })

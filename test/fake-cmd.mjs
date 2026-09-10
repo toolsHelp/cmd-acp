@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Fake Command Code CLI for tests. Supports:
-//   -p "<prompt>" --output-format json  → NDJSON stream (tool_running + result)
+//   -p "<prompt>" --output-format json  → NDJSON stream (tool events + result)
 //   --list-models                        → plain-text model list
 //   --resume <id>                        → echoes the resumed session id
 //   --plan / --effort <l>                → echoed in finalText
@@ -48,15 +48,30 @@ for (let i = 0; i < args.length; i++) {
 
 const emit = (obj) => process.stdout.write(JSON.stringify(obj) + "\n")
 
+emit({ type: "event", event: { type: "thinking_start" } })
+emit({ type: "event", event: { type: "thinking_delta", delta: "Let me think" } })
+emit({ type: "event", event: { type: "thinking_delta", delta: " about this." } })
+emit({ type: "event", event: { type: "thinking_end" } })
 emit({
   type: "event",
   event: {
-    type: "tool_running",
-    toolCallId: "t1",
+    type: "tool_queued",
+    toolCallId: "call_fake0001",
     toolName: "read_file",
-    description: "Read package.json",
+    input: { file_path: "package.json" },
   },
 })
+if (!yolo) {
+  emit({
+    type: "event",
+    event: {
+      type: "tool_hook_blocked",
+      toolCallId: "call_fake0001",
+      toolName: "read_file",
+      hookOutput: 'Error: Tool "read_file" requires permissions.',
+    },
+  })
+}
 emit({
   type: "result",
   subtype: "success",

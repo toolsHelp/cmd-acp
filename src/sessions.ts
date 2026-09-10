@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto"
 import type { CmdConfig } from "./cmd-runner.js"
+import type { SessionBroker } from "./permission/session-broker.js"
 
 export interface Session {
   id: string
@@ -13,6 +14,8 @@ export interface Session {
   hasPrompted: boolean
   /** Cleanup for the materialized .mcp.json (MCP passthrough). */
   cleanupMcp?: () => void
+  /** Live permission broker for this session, while a turn is running. */
+  broker?: SessionBroker | null
 }
 
 export class SessionStore {
@@ -50,10 +53,25 @@ export class SessionStore {
         session.config.permissionMode = value === "yolo" ? "yolo" : "safe"
         break
       case "mode":
-        if (value !== "plan" && value !== "normal") {
-          throw new Error("mode must be 'plan' or 'normal'")
+        // Single mode selector covering both session mode and permission
+        // policy. `yolo` is the only value that permits edits/shell, and it is
+        // mutually exclusive with `plan`.
+        switch (value) {
+          case "yolo":
+            session.config.permissionMode = "yolo"
+            session.config.mode = "normal"
+            break
+          case "plan":
+            session.config.permissionMode = "safe"
+            session.config.mode = "plan"
+            break
+          case "normal":
+            session.config.permissionMode = "safe"
+            session.config.mode = "normal"
+            break
+          default:
+            throw new Error(`mode must be 'normal', 'plan' or 'yolo'`)
         }
-        session.config.mode = value
         break
       default:
         throw new Error(`Unknown config option: ${configId}`)
@@ -66,6 +84,13 @@ export class SessionStore {
     if (session?.promptAbort) {
       session.promptAbort.abort()
       session.promptAbort = null
+    }
+    // Tear the broker down before dropping the session: a pending permission
+    // prompt must not outlive the session it belongs to.
+    if (session?.broker) {
+      const broker = session.broker
+      session.broker = null
+      void broker.stop().catch(() => {})
     }
     session?.cleanupMcp?.()
     this.sessions.delete(sessionId)

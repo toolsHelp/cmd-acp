@@ -5,18 +5,24 @@ import { fileURLToPath } from "node:url"
 const fakeCmd = fileURLToPath(new URL("./fake-cmd.mjs", import.meta.url))
 
 describe("runCmdPrompt", () => {
-  test("parses tool_running events and success result", async () => {
+  test("parses tool events and success result", async () => {
     process.env.CMD_BIN = fakeCmd
     const tools: string[] = []
     const chunks: string[] = []
+    const blocked: string[] = []
+    const thoughts: string[] = []
     const outcome = await runCmdPrompt({
       prompt: "hello",
       cwd: process.cwd(),
       onTool: (t) => tools.push(t.toolName),
+      onToolBlocked: (t) => blocked.push(t.toolName),
+      onThought: (t) => thoughts.push(t),
       onText: (t) => chunks.push(t),
     })
     expect(outcome.stopReason).toBe("end_turn")
-    expect(outcome.tools.map((t) => t.toolName)).toEqual(["read_file"])
+    expect(tools).toEqual(["read_file"])
+    expect(blocked).toEqual(["read_file"])
+    expect(thoughts.join("")).toBe("Let me think about this.")
     expect(outcome.finalText).toContain("hello")
     expect(outcome.cmdSessionId).toBe("fake-session-1")
     expect(chunks.join("")).toContain("hello")

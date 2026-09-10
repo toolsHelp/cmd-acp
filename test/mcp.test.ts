@@ -54,4 +54,56 @@ describe("materializeMcp", () => {
     expect(restored.mcpServers.original).toBeTruthy()
     rmSync(dir, { recursive: true, force: true })
   })
+
+  test("writes http servers with url and object headers", () => {
+    const dir = makeDir()
+    // Shape Paseo actually sends on session/new.
+    const httpServer = {
+      type: "http",
+      name: "paseo",
+      url: "http://127.0.0.1:6767/mcp/agents?callerAgentId=abc",
+      headers: [{ name: "Authorization", value: "Bearer tok" }],
+    } as unknown as McpServer
+
+    const cleanup = materializeMcp(dir, [httpServer])
+    const mcpPath = join(dir, ".mcp.json")
+    const parsed = JSON.parse(readFileSync(mcpPath, "utf8"))
+    const entry = parsed.mcpServers.paseo
+    expect(entry).toBeTruthy()
+    expect(entry.type).toBe("http")
+    expect(entry.url).toContain("127.0.0.1:6767")
+    // ACP sends headers as an array; Command Code expects a plain object.
+    expect(entry.headers).toEqual({ Authorization: "Bearer tok" })
+    expect(entry.command).toBeUndefined()
+
+    cleanup()
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  test("writes stdio env as a plain object", () => {
+    const dir = makeDir()
+    const server = {
+      name: "srv",
+      command: "node",
+      args: ["server.js"],
+      env: [{ name: "TOKEN", value: "abc" }],
+    } as unknown as McpServer
+
+    const cleanup = materializeMcp(dir, [server])
+    const parsed = JSON.parse(readFileSync(join(dir, ".mcp.json"), "utf8"))
+    expect(parsed.mcpServers.srv.env).toEqual({ TOKEN: "abc" })
+
+    cleanup()
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  test("skips the acp transport", () => {
+    const dir = makeDir()
+    const acpServer = { type: "acp", name: "x", id: "srv-1" } as unknown as McpServer
+    const cleanup = materializeMcp(dir, [acpServer])
+    // Nothing convertible → no file written at all.
+    expect(existsSync(join(dir, ".mcp.json"))).toBe(false)
+    cleanup()
+    rmSync(dir, { recursive: true, force: true })
+  })
 })

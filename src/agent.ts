@@ -1,8 +1,14 @@
 import * as acp from "@agentclientprotocol/sdk"
-import type { SessionConfigOption } from "@agentclientprotocol/sdk"
+import type { SessionConfigOption, ToolKind } from "@agentclientprotocol/sdk"
 import { runCmdPrompt } from "./cmd-runner.js"
 import { listModels } from "./models.js"
 import { materializeMcp } from "./mcp.js"
+import { ACPPermissionHandler } from "./permission/acp-handler.js"
+import {
+  brokerTimeoutFromEnv,
+  startSessionBroker,
+  type SessionBroker,
+} from "./permission/session-broker.js"
 import { SessionStore } from "./sessions.js"
 
 export const AGENT_NAME = "cmd-acp"
@@ -10,25 +16,80 @@ export const AGENT_NAME = "cmd-acp"
 /** Default context window assumed for `cmd` runs (usage size). */
 const DEFAULT_CONTEXT_SIZE = 200_000
 
+/** Map a Command Code tool name to an ACP `ToolKind`. */
+function toolKindFor(toolName: string): ToolKind {
+  switch (toolName) {
+    case "shell_command":
+    case "monitor_command":
+    case "kill_shell":
+      return "execute"
+    case "edit_file":
+    case "write_file":
+    case "apply_patch":
+      return "edit"
+    case "read_file":
+      return "read"
+    case "list_dir":
+    case "glob":
+    case "grep":
+    case "search":
+      return "search"
+    case "delete_file":
+      return "delete"
+    case "move_file":
+      return "move"
+    case "webfetch":
+    case "fetch":
+      return "fetch"
+    default:
+      return "other"
+  }
+}
+
+/** One-line title for a tool call, preferring its most telling argument. */
+function describeTool(toolName: string, input: unknown): string {
+  if (input && typeof input === "object") {
+    const record = input as Record<string, unknown>
+    const candidate =
+      record.command ?? record.file_path ?? record.path ?? record.pattern ?? record.query
+    if (typeof candidate === "string" && candidate.trim()) {
+      return `${toolName}: ${candidate.trim()}`
+    }
+  }
+  return toolName
+}
+
 /**
- * Build the ACP `configOptions` returned on session/new:
- * a `model` select (from `cmd --list-models`, cached), a `reasoning` select
- * (--effort), a `permission_mode` select (safe/yolo), and a `mode` select
- * (normal/plan).
+ * Build the ACP `configOptions` returned on session/new and
+ * session/set_config_option: a `model` select (from `cmd --list-models`,
+ * cached), a `reasoning` select (--effort), a `permission_mode` select
+ * (safe/yolo), and a `mode` select (normal/plan).
+ *
+ * When `sessionId` is given, the select values recorded on that session are
+ * reported back as `currentValue`, so a client that re-reads the options after
+ * a change sees its own selection.
  */
-async function buildConfigOptions(): Promise<SessionConfigOption[]> {
+async function buildConfigOptions(
+  sessions: SessionStore,
+  sessionId?: string,
+): Promise<SessionConfigOption[]> {
+  const session = sessionId ? sessions.get(sessionId) : undefined
   const options: SessionConfigOption[] = []
 
   try {
     const models = await listModels()
     if (models.length > 0) {
+      const selected =
+        session?.config.model && models.some((m) => m.id === session.config.model)
+          ? session.config.model
+          : models[0].id
       options.push({
         type: "select",
         id: "model",
         name: "Model",
         description: "Command Code model for this session",
         category: "model",
-        currentValue: models[0].id,
+        currentValue: selected,
         options: models.map((m) => ({
           value: m.id,
           name: m.name,
@@ -46,7 +107,7 @@ async function buildConfigOptions(): Promise<SessionConfigOption[]> {
     name: "Reasoning effort",
     description: "Reasoning effort for the model (--effort)",
     category: "thought_level",
-    currentValue: "medium",
+    currentValue: session?.config.reasoning ?? "medium",
     options: [
       { value: "low", name: "Low" },
       { value: "medium", name: "Medium" },
@@ -54,29 +115,25 @@ async function buildConfigOptions(): Promise<SessionConfigOption[]> {
     ],
   })
 
-  options.push({
-    type: "select",
-    id: "permission_mode",
-    name: "Permission mode",
-    description: "safe: Command Code blocks edits/shell (fail-closed) · yolo: allow all",
-    category: "mode",
-    currentValue: "safe",
-    options: [
-      { value: "safe", name: "Safe", description: "Block edits and shell commands" },
-      { value: "yolo", name: "Yolo", description: "Allow edits and shell commands" },
-    ],
-  })
-
+  // A single `mode` select drives both session mode and permission policy.
+  // Clients expose only the first `category: "mode"` option as their mode
+  // list (and switch it via session/set_mode or this config option), so
+  // permission policy has to live here to be reachable from the UI.
+  //   normal - full agent, edits/shell refused (Command Code's print default)
+  //   plan   - read-only exploration (--plan)
+  //   yolo   - allow edits and shell (--yolo)
+  const currentMode = session?.config.permissionMode === "yolo" ? "yolo" : (session?.config.mode ?? "normal")
   options.push({
     type: "select",
     id: "mode",
     name: "Session mode",
-    description: "normal: full agent · plan: read-only exploration (--plan)",
+    description: "normal: tools blocked · plan: read-only (--plan) · yolo: allow edits/shell (--yolo)",
     category: "mode",
-    currentValue: "normal",
+    currentValue: currentMode,
     options: [
-      { value: "normal", name: "Normal", description: "Full agent with tools" },
+      { value: "normal", name: "Normal", description: "Full agent, edits and shell blocked" },
       { value: "plan", name: "Plan", description: "Read-only exploration" },
+      { value: "yolo", name: "Yolo", description: "Allow edits and shell commands" },
     ],
   })
 
@@ -98,16 +155,28 @@ export function registerHandlers(app: ReturnType<typeof acp.agent>, sessions: Se
       const session = sessions.create(ctx.params.cwd ?? process.cwd())
       // MCP passthrough: materialize the injected servers into .mcp.json.
       session.cleanupMcp = materializeMcp(session.cwd, ctx.params.mcpServers)
-      const configOptions = await buildConfigOptions()
+      const configOptions = await buildConfigOptions(sessions)
       return { sessionId: session.id, configOptions }
     })
     .onRequest("session/close", (ctx) => {
       sessions.close(ctx.params.sessionId)
       return {}
     })
-    .onRequest("session/set_config_option", (ctx) => {
+    .onRequest("session/set_config_option", async (ctx) => {
       sessions.setConfig(ctx.params.sessionId, ctx.params.configId, ctx.params.value)
-      return { configOptions: [] }
+      // Return the full option list with the updated currentValue. Clients
+      // replace their cached configOptions with this response, so returning an
+      // empty array makes them believe the options no longer exist.
+      const configOptions = await buildConfigOptions(sessions, ctx.params.sessionId)
+      return { configOptions }
+    })
+    .onRequest("session/set_mode", (ctx) => {
+      // Clients that expose session modes natively call this instead of
+      // session/set_config_option. Map the mode id onto the `mode` option.
+      // The ACP response carries no configOptions here, so the client keeps
+      // its own mode state.
+      sessions.setConfig(ctx.params.sessionId, "mode", ctx.params.modeId)
+      return {}
     })
     .onRequest("session/prompt", async (ctx) => {
       const session = sessions.require(ctx.params.sessionId)
@@ -125,10 +194,52 @@ export function registerHandlers(app: ReturnType<typeof acp.agent>, sessions: Se
           },
         })
 
+      // Reasoning streams before the answer; send it as a thought chunk so the
+      // client can render it separately (Paseo maps this to a "reasoning"
+      // timeline item). Without it the turn looks stalled for many seconds.
+      const notifyThought = (chunk: string) =>
+        ctx.client.notify(acp.methods.client.session.update, {
+          sessionId: ctx.params.sessionId,
+          update: {
+            sessionUpdate: "agent_thought_chunk",
+            content: { type: "text", text: chunk },
+          },
+        })
+
       // Continuity: from the 2nd turn onward, resume the previous cmd session.
       const config = { ...session.config }
       if (session.hasPrompted && session.cmdSessionId) {
         config.resumeSessionId = session.cmdSessionId
+      }
+
+      // Tool calls that have been announced but not yet resolved. Command Code
+      // can end a turn with a tool still queued (e.g. it runs out of turns
+      // after being blocked), which would otherwise leave the client spinning.
+      const openToolCalls = new Map<string, string>()
+
+      // Permission broker: only needed when Command Code is patched to ask.
+      // Without the patch it never connects, and an idle pipe costs nothing.
+      // In yolo mode Command Code bypasses the gate entirely, so skip it.
+      let broker: SessionBroker | null = null
+      if (session.config.permissionMode !== "yolo") {
+        try {
+          broker = await startSessionBroker({
+            sessionId: session.id,
+            timeoutMs: brokerTimeoutFromEnv(),
+            makeHandler: () =>
+              new ACPPermissionHandler(ctx.client, {
+                sessionId: ctx.params.sessionId,
+                signal: ctx.signal,
+              }),
+          })
+          session.broker = broker
+        } catch (err) {
+          // A broker we cannot start must not block the turn: Command Code
+          // falls back to its own fail-closed behaviour.
+          const message = err instanceof Error ? err.message : String(err)
+          await notifyText(`\n\n> ⚠️ Permission broker unavailable: ${message}`)
+          broker = null
+        }
       }
 
       const outcome = await runCmdPrompt({
@@ -136,39 +247,88 @@ export function registerHandlers(app: ReturnType<typeof acp.agent>, sessions: Se
         cwd: session.cwd,
         config,
         signal: ctx.signal,
+        brokerAddress: broker?.address,
+        sessionId: session.id,
         onText: (chunk) => {
           void notifyText(chunk)
         },
+        onThought: (chunk) => {
+          void notifyThought(chunk)
+        },
         onTool: (tool) => {
-          const toolCallId = `cmd-${tool.toolName}`
+          // Use Command Code's own id (e.g. `call_<hex>`): it is stable across
+          // the queued/blocked pair and unique per invocation.
+          const toolCallId = tool.toolCallId
+          openToolCalls.set(toolCallId, tool.toolName)
           void ctx.client.notify(acp.methods.client.session.update, {
             sessionId: ctx.params.sessionId,
             update: {
               sessionUpdate: "tool_call",
               toolCallId,
-              title: tool.description ?? tool.toolName,
-              kind: "read",
-              status: "pending",
-              rawInput: { toolName: tool.toolName },
+              title: describeTool(tool.toolName, tool.input),
+              kind: toolKindFor(tool.toolName),
+              status: "in_progress",
+              rawInput: (tool.input ?? {}) as Record<string, unknown>,
             },
           })
+        },
+        onToolBlocked: (tool) => {
+          openToolCalls.delete(tool.toolCallId)
+          // Print mode has no permission prompt, so Command Code refuses the
+          // tool itself. Surface it as a failed tool call rather than silence.
           void ctx.client.notify(acp.methods.client.session.update, {
             sessionId: ctx.params.sessionId,
             update: {
               sessionUpdate: "tool_call_update",
-              toolCallId,
-              status: "completed",
+              toolCallId: tool.toolCallId,
+              status: "failed",
               content: [
                 {
                   type: "content",
-                  content: { type: "text", text: "" },
+                  content: {
+                    type: "text",
+                    text: tool.hookOutput ?? "Blocked: requires permissions",
+                  },
                 },
               ],
-              rawOutput: {},
             },
           })
         },
       })
+
+      // The broker belongs to this turn: Command Code has exited (or been
+      // killed), so nothing can still be waiting on it.
+      if (broker) {
+        session.broker = null
+        await broker.stop().catch(() => {})
+      }
+
+      // Close out any tool call that never received a terminal event, so the
+      // client does not show a spinner forever.
+      for (const [toolCallId, toolName] of openToolCalls) {
+        void ctx.client.notify(acp.methods.client.session.update, {
+          sessionId: ctx.params.sessionId,
+          update: {
+            sessionUpdate: "tool_call_update",
+            toolCallId,
+            status: (outcome.stopReason === "error" ? "failed" : "completed") as
+              | "failed"
+              | "completed",
+            content: [
+              {
+                type: "content",
+                content: {
+                  type: "text",
+                  text:
+                    outcome.stopReason === "error"
+                      ? `Tool did not complete: ${outcome.error ?? "unknown error"}`
+                      : `${toolName} finished without a result event`,
+                },
+              },
+            ],
+          },
+        })
+      }
 
       session.hasPrompted = true
       if (outcome.cmdSessionId) session.cmdSessionId = outcome.cmdSessionId

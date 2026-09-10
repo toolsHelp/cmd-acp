@@ -19,7 +19,9 @@
     "access": "public"
   },
   "scripts": {
-    "build": "bun build src/index.ts --outdir dist --target node && chmod +x dist/index.js",
+    "build": "bun build src/index.ts --outdir dist --target node",
+    "build:patcher": "bun build fork/command-code/src/bootstrap.ts --outfile tools/command-code-patch/dist/provider.mjs --target node --format esm",
+    "build:all": "bun run build && bun run build:patcher",
     "typecheck": "tsc --noEmit",
     "test": "bun test"
   },
