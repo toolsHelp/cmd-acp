@@ -62,13 +62,14 @@ emit({
   },
 })
 if (!yolo) {
+  // Current Command Code releases emit `tool_denied` with no reason at all.
+  // The pre-1.53 `tool_hook_blocked` shape is covered by unit tests instead.
   emit({
     type: "event",
     event: {
-      type: "tool_hook_blocked",
+      type: "tool_denied",
       toolCallId: "call_fake0001",
       toolName: "read_file",
-      hookOutput: 'Error: Tool "read_file" requires permissions.',
     },
   })
 }

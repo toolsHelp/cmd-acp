@@ -1,27 +1,73 @@
 import { describe, expect, test } from "bun:test"
-import { runCmdPrompt, resolveCmdBinary } from "../src/cmd-runner.js"
+import { runCmdPrompt, resolveCmdBinary, normalizeToolDenied } from "../src/cmd-runner.js"
 import { fileURLToPath } from "node:url"
 
 const fakeCmd = fileURLToPath(new URL("./fake-cmd.mjs", import.meta.url))
+
+describe("normalizeToolDenied", () => {
+  test("accepts the current tool_denied shape, which carries no reason", () => {
+    expect(
+      normalizeToolDenied({
+        type: "tool_denied",
+        toolCallId: "call_1",
+        toolName: "write_file",
+      }),
+    ).toEqual({ type: "tool_denied", toolCallId: "call_1", toolName: "write_file" })
+  })
+
+  test("accepts the pre-1.53 tool_hook_blocked shape and keeps its message", () => {
+    expect(
+      normalizeToolDenied({
+        type: "tool_hook_blocked",
+        toolCallId: "call_2",
+        toolName: "shell_command",
+        hookOutput: "requires permissions",
+      }),
+    ).toEqual({
+      type: "tool_denied",
+      toolCallId: "call_2",
+      toolName: "shell_command",
+      reason: "requires permissions",
+    })
+  })
+
+  test("falls back to other reason fields", () => {
+    const denied = normalizeToolDenied({
+      type: "tool_denied",
+      toolCallId: "c",
+      toolName: "t",
+      message: "from message",
+    })
+    expect(denied?.reason).toBe("from message")
+  })
+
+  test("refuses to invent an id, which would break correlation", () => {
+    // Without an id the client cannot resolve the matching tool_call, so the
+    // event must be dropped rather than reported against the wrong tool.
+    expect(normalizeToolDenied({ type: "tool_denied", toolName: "write_file" })).toBeNull()
+    expect(normalizeToolDenied({ type: "tool_denied", toolCallId: "c" })).toBeNull()
+    expect(normalizeToolDenied({ type: "tool_denied", toolCallId: "", toolName: "t" })).toBeNull()
+  })
+})
 
 describe("runCmdPrompt", () => {
   test("parses tool events and success result", async () => {
     process.env.CMD_BIN = fakeCmd
     const tools: string[] = []
     const chunks: string[] = []
-    const blocked: string[] = []
+    const denied: string[] = []
     const thoughts: string[] = []
     const outcome = await runCmdPrompt({
       prompt: "hello",
       cwd: process.cwd(),
       onTool: (t) => tools.push(t.toolName),
-      onToolBlocked: (t) => blocked.push(t.toolName),
+      onToolDenied: (t) => denied.push(t.toolName),
       onThought: (t) => thoughts.push(t),
       onText: (t) => chunks.push(t),
     })
     expect(outcome.stopReason).toBe("end_turn")
     expect(tools).toEqual(["read_file"])
-    expect(blocked).toEqual(["read_file"])
+    expect(denied).toEqual(["read_file"])
     expect(thoughts.join("")).toBe("Let me think about this.")
     expect(outcome.finalText).toContain("hello")
     expect(outcome.cmdSessionId).toBe("fake-session-1")

@@ -109,7 +109,7 @@ describe("cmd-acp ACP server (E2E over stdio)", () => {
     })
   })
 
-  test("maps tool_queued/tool_hook_blocked to tool_call and tool_call_update", async () => {
+  test("maps tool_queued/tool_denied to tool_call and tool_call_update", async () => {
     await withClient(async (ctx) => {
       await ctx.request("initialize", {
         protocolVersion: acp.PROTOCOL_VERSION,

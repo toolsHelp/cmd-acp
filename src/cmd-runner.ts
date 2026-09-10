@@ -23,14 +23,27 @@ export interface CmdToolQueued {
 }
 
 /**
- * A tool that was refused because print mode has no interactive permission
- * prompt. This is the hook point a permission broker would replace.
+ * A tool that was refused.
+ *
+ * Two wire shapes exist across Command Code releases:
+ *   - `tool_hook_blocked` (pre-1.53): carries `hookOutput` with the refusal text
+ *   - `tool_denied` (1.53+): carries no reason at all
+ *
+ * Both are normalised to this shape, so callers never branch on the version.
  */
-export interface CmdToolBlocked {
-  type: "tool_hook_blocked"
+export interface CmdToolDenied {
+  type: "tool_denied"
   toolCallId: string
   toolName: string
-  /** The refusal text Command Code injected back into the conversation. */
+  /** Refusal text, when the release provided one. */
+  reason?: string
+}
+
+/** Raw `tool_hook_blocked` payload (pre-1.53 releases). */
+interface RawToolHookBlocked {
+  type: "tool_hook_blocked"
+  toolCallId?: string
+  toolName?: string
   hookOutput?: string
 }
 
@@ -40,9 +53,39 @@ export interface CmdThinkingDelta {
   delta?: string
 }
 
+/**
+ * Normalise a refusal event into {@link CmdToolDenied}.
+ *
+ * Returns null when the payload lacks the identifiers needed to correlate it
+ * with a tool call: emitting a denial without an id would leave the client
+ * unable to resolve the matching `tool_call`.
+ */
+export function normalizeToolDenied(event: {
+  type?: unknown
+  toolCallId?: unknown
+  id?: unknown
+  toolName?: unknown
+  hookOutput?: unknown
+  message?: unknown
+  reason?: unknown
+}): CmdToolDenied | null {
+  const toolCallId = event.toolCallId ?? event.id
+  const toolName = event.toolName
+  if (typeof toolCallId !== "string" || !toolCallId) return null
+  if (typeof toolName !== "string" || !toolName) return null
+
+  const reason = event.hookOutput ?? event.message ?? event.reason
+  return {
+    type: "tool_denied",
+    toolCallId,
+    toolName,
+    ...(typeof reason === "string" && reason ? { reason } : {}),
+  }
+}
+
 export interface CmdEvent {
   type: "event"
-  event: CmdToolQueued | CmdToolBlocked | CmdThinkingDelta | { type: string; [key: string]: unknown }
+  event: CmdToolQueued | CmdToolDenied | CmdThinkingDelta | { type: string; [key: string]: unknown }
 }
 
 export interface CmdUsage {
@@ -69,7 +112,7 @@ export interface CmdRunOutcome {
   /** Raw final text from Command Code (may be empty on error). */
   finalText: string
   /** Tools observed in the event stream, in order. */
-  tools: (CmdToolQueued | CmdToolBlocked)[]
+  tools: (CmdToolQueued | CmdToolDenied)[]
   stopReason: "end_turn" | "max_turns" | "error" | "cancelled"
   /** Present when subtype === "error". */
   error?: string
@@ -166,7 +209,7 @@ export async function runCmdPrompt(opts: {
   /** Passed through so the broker can bind a decision to a session. */
   sessionId?: string
   onTool?: (tool: CmdToolQueued) => void
-  onToolBlocked?: (tool: CmdToolBlocked) => void
+  onToolDenied?: (tool: CmdToolDenied) => void
   onThought?: (delta: string) => void
   onText?: (text: string) => void
 }): Promise<CmdRunOutcome> {
@@ -178,7 +221,7 @@ export async function runCmdPrompt(opts: {
     brokerAddress,
     sessionId,
     onTool,
-    onToolBlocked,
+    onToolDenied,
     onThought,
     onText,
   } = opts
@@ -212,7 +255,7 @@ export async function runCmdPrompt(opts: {
   signal?.addEventListener("abort", abortHandler, { once: true })
 
   let buffered = ""
-  const tools: (CmdToolQueued | CmdToolBlocked)[] = []
+  const tools: (CmdToolQueued | CmdToolDenied)[] = []
   let finalText = ""
   let stopReason: CmdRunOutcome["stopReason"] = "end_turn"
   let error: string | undefined
@@ -242,10 +285,13 @@ export async function runCmdPrompt(opts: {
           onTool?.(tool)
           break
         }
+        case "tool_denied":
         case "tool_hook_blocked": {
-          const tool = event as CmdToolBlocked
-          tools.push(tool)
-          onToolBlocked?.(tool)
+          const denied = normalizeToolDenied(event as Record<string, unknown>)
+          if (denied) {
+            tools.push(denied)
+            onToolDenied?.(denied)
+          }
           break
         }
         case "thinking_delta": {

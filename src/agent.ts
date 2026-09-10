@@ -272,10 +272,11 @@ export function registerHandlers(app: ReturnType<typeof acp.agent>, sessions: Se
             },
           })
         },
-        onToolBlocked: (tool) => {
+        onToolDenied: (tool) => {
           openToolCalls.delete(tool.toolCallId)
-          // Print mode has no permission prompt, so Command Code refuses the
-          // tool itself. Surface it as a failed tool call rather than silence.
+          // The tool was refused. Surface it as a failed tool call rather than
+          // silence, whether the refusal came from Command Code's own policy or
+          // from a permission decision.
           void ctx.client.notify(acp.methods.client.session.update, {
             sessionId: ctx.params.sessionId,
             update: {
@@ -287,7 +288,7 @@ export function registerHandlers(app: ReturnType<typeof acp.agent>, sessions: Se
                   type: "content",
                   content: {
                     type: "text",
-                    text: tool.hookOutput ?? "Blocked: requires permissions",
+                    text: tool.reason ?? "Permission denied",
                   },
                 },
               ],
