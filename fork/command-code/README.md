@@ -3,37 +3,81 @@
 Adds a pluggable permission decision source to Command Code's headless
 (`-p`) mode.
 
-## Why a fork at all
+## Why a patch is needed
 
-Command Code's print harness refuses five tools outright:
+Command Code has no configuration or plugin surface that can answer a
+permission prompt in print mode. The decision is produced by a stub inside
+`headlessInteraction(...)`:
 
 ```js
-DE = new Set(["edit_file","write_file","shell_command","monitor_command","kill_shell"])
+function headlessInteraction(e = {}) {
+  return {
+    confirmTool: async ({risk}) =>
+      risk !== undefined ? "deny" : (e.autoAllow ? "allow" : "deny"),
+    askQuestion: async ({questions}) => /* auto-selects the first option */,
+  }
+}
 ```
 
-There is no hook, plugin or config surface that can intercept that decision —
-it is a `beforeToolCall` mod returning `{ block: true }` inside the minified
-`dist/cli.mjs`. So the only way to add a human-in-the-loop flow is to patch the
-bundle.
+`askQuestion` picking the first option is why an unattended run never shows a
+prompt. `confirmTool` never consults anything external, so there is nothing to
+configure — the bundle has to be patched.
 
-**Scope of the patch is deliberately one arrow function body.** Everything
-around it — the enclosing `createPrintPermissionGateMod`, its `id`, the
-`__name(...)` registration and the `resolvePrintHarnessMods` caller — is left
-untouched.
+### The verified decision path
+
+Established with beacons against command-code 1.53.0:
+
+```
+tool call
+   |
+   v
+checkPermissions()
+   |
+   v
+permissions.check()          ruleset: allow / ask / deny
+   |
+   v
+resolveDecision()
+   |
+   v
+confirm()
+   |
+   v
+headlessInteraction.confirmTool()      <-- the only interactive hook
+   |
+   v
+tool_denied
+```
+
+When a tool matches an `ask` rule, Command Code attaches a structured reason:
+
+```json
+{ "risk": { "kind": "ask-rule", "detail": "write_file" } }
+```
+
+### `createPrintPermissionGateMod` is legacy
+
+An earlier release refused sensitive tools through a `beforeToolCall` mod
+(`createPrintPermissionGateMod`). As of 1.53 that mod is present in the bundle
+but no longer reaches a decision — the permission engine answers through
+`confirmTool` instead.
+
+The patcher therefore **detects it but never modifies it**. Rewriting dead code
+would hide the day it becomes live again.
 
 ## Layering
 
 ```
-print-permission-gate            (patched, 1 arrow function)
+headlessInteraction.confirmTool        (patched, one arrow function)
         |
         v
-  PermissionProvider             src/permission-provider.ts
+  PermissionProvider                   src/permission-provider.ts
         |
    +----+-----------------+
    |                      |
 ConsolePermissionProvider  BrokerPermissionProvider
-(default = built-in        |
- behaviour)                |
+(no opinion: falls back    |
+ to the built-in rules)    |
                     PermissionTransport
                            |
                     IpcPermissionTransport   src/ipc-transport.ts
@@ -41,8 +85,8 @@ ConsolePermissionProvider  BrokerPermissionProvider
                     named pipe / unix socket
 ```
 
-There is no knowledge of ACP, Paseo, sessions-as-protocol or pipes above
-`PermissionTransport`. A future transport only has to implement:
+Nothing above `PermissionTransport` knows about ACP, named pipes or any
+particular client. A future transport only has to implement:
 
 ```ts
 interface PermissionTransport {
@@ -59,15 +103,26 @@ type PermissionDecision =
   | { type: "deny"; message: string }
 ```
 
-`always_allow` is separate from `allow` so a client can express a policy change
-("allow this tool from now on") rather than a one-shot approval.
+Two fields carry meaning beyond the verdict:
+
+- **`always_allow`** is separate from `allow` so a client can express a policy
+  change ("allow this tool from now on") rather than a one-shot approval.
+- **`explicit`** distinguishes "a real party answered deny" from "nobody
+  answered". The patched `confirmTool` only honours an explicit denial;
+  otherwise it falls through to the built-in rules, so an absent provider
+  behaves exactly like the unpatched bundle instead of becoming a blanket
+  denial.
+
+`risk` is passed through as structured data rather than flattened to a boolean,
+so a policy layer can later tell "the user asked to be prompted for this tool"
+apart from "this operation is inherently risky".
 
 ## Activation
 
 | Environment | Provider | Behaviour |
 |---|---|---|
-| `CMD_ACP_PERMISSION_BROKER` unset | `ConsolePermissionProvider` | Identical to unpatched Command Code (fail-closed) |
-| `CMD_ACP_PERMISSION_BROKER` set | `BrokerPermissionProvider` | Asks the broker; unavailable broker → deny |
+| `CMD_ACP_PERMISSION_BROKER` unset | `ConsolePermissionProvider` | Identical to unpatched Command Code |
+| `CMD_ACP_PERMISSION_BROKER` set | `BrokerPermissionProvider` | Asks the broker; unavailable broker denies |
 
 Optional:
 
@@ -77,14 +132,22 @@ Optional:
 
 ## Failure policy
 
-Every error path resolves to **deny**: unreachable broker, malformed frame,
-connection close, timeout. An allow is only ever returned when the broker
-explicitly says so.
+Every error path falls through to the original stub, and the broker transport
+denies on any error. An allow is only ever returned when a broker explicitly
+says so. Verified cases:
+
+| Case | Result |
+|---|---|
+| no broker configured | built-in rules apply (unchanged) |
+| unreachable broker | denied (fails closed) |
+| broker returns allow | tool runs |
+| broker returns deny | `tool_denied` |
+| non-risky tool | provider not consulted at all |
 
 ## Files
 
 ```
-src/permission-provider.ts   provider + decision types, Console/Broker impls
+src/permission-provider.ts   provider + decision + risk types, Console/Broker
 src/ipc-transport.ts         newline-delimited JSON over a local socket
 src/bootstrap.ts             env-driven provider selection (cached per process)
 ```
@@ -92,9 +155,11 @@ src/bootstrap.ts             env-driven provider selection (cached per process)
 ## Build and patch
 
 ```bash
-# compile the provider modules into the patcher's dist/
-bun build fork/command-code/src/bootstrap.ts \
-  --outfile tools/command-code-patch/dist/provider.mjs --target node --format esm
+# compile the provider module into the patcher's dist/
+bun run build:patcher
+
+# inspect what would change, without writing anything
+node tools/command-code-patch/patch.mjs <command-code-dir> --check
 
 # patch a copy (never the global install during development)
 node tools/command-code-patch/patch.mjs <command-code-dir> \
@@ -106,12 +171,12 @@ cannot result in a silently unpatched or mispatched bundle.
 
 ## Upstream re-anchoring
 
-When Command Code changes, locate the gate and re-derive the anchor:
+When Command Code changes, locate the stub and re-derive the anchor:
 
 ```bash
-grep -o 'async({toolName:[a-z]})[^}]*printPermissionDeniedMessage([a-z])}}' \
+grep -o 'confirmTool:__name(async({risk:[a-z]})[^}]*"confirmTool")' \
   <command-code>/dist/cli.mjs
 ```
 
-Only `GATE_ARROW_ANCHOR` in `tools/command-code-patch/patch.mjs` needs updating;
+Only `CONFIRM_ANCHOR` in `tools/command-code-patch/patch.mjs` needs updating;
 no other file knows the bundle's shape.

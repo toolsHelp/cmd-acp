@@ -1,24 +1,26 @@
 /**
- * Command Code permission-gate patcher.
+ * Command Code permission patcher.
  *
- * Command Code's headless (`-p`) mode refuses sensitive tools outright: the
- * `print-permission-gate` mod returns `{ block: true }` for a fixed tool set,
- * and there is no hook or plugin surface to intercept it. Adding a
- * human-in-the-loop flow therefore requires patching the bundled `cli.mjs`.
+ * Command Code has no configuration or plugin surface that can answer a
+ * permission prompt in headless (`-p`) mode. The decision comes from
+ * `headlessInteraction(...)`, whose `confirmTool` is a stub:
  *
- * Scope: only the gate's *decision*. The enclosing function, its id, the
- * `__name(...)` wrapper and the `resolvePrintHarnessMods` caller are all left
- * alone, so the diff against upstream stays as small as possible and a future
- * release can be re-anchored by locating one short string.
+ *     confirmTool: async ({risk}) =>
+ *       risk !== undefined ? "deny" : (autoAllow ? "allow" : "deny")
  *
- *   function createPrintPermissionGateMod(){return{id:"print-permission-gate",
- *     beforeToolCall:__name(                                 <-- kept
- *       async({toolName:e})=>{ ... }                         <-- replaced
- *     ,"beforeToolCall")}}                                   <-- kept
+ * Verified path (beacon evidence in fork/command-code/README.md):
  *
- * The replacement delegates to the provider bootstrap, which picks an
- * implementation from the environment. With no broker configured it
- * reproduces the original refusal byte for byte.
+ *     tool call -> checkPermissions -> permissions.check
+ *               -> resolveDecision -> confirm -> confirmTool
+ *
+ * This patcher replaces that one arrow function so it delegates to a
+ * configurable provider first and falls back to the original logic whenever no
+ * provider is available. Everything around it (`headlessInteraction`, its
+ * `askQuestion` sibling, the `__name` wrapper) is left untouched.
+ *
+ * A second, legacy injection point (`createPrintPermissionGateMod`) is detected
+ * but never modified: as of 1.53 it no longer reaches a decision. Reporting it
+ * explicitly is more useful than silently rewriting dead code.
  *
  * Plain ESM (no TypeScript syntax): this file runs via `node tools/...`.
  */
@@ -31,31 +33,50 @@ import { fileURLToPath } from "node:url"
 const HERE = dirname(fileURLToPath(import.meta.url))
 
 /**
- * Anchor: the arrow function passed to `__name`, body included.
- * Present exactly once in command-code 1.51.3 - 1.53.0.
+ * Primary anchor: the `confirmTool` stub inside `headlessInteraction`.
+ * Present exactly once in command-code 1.53.0.
  */
-export const GATE_ARROW_ANCHOR =
-  'async({toolName:e})=>{if(DE.has(e))return{block:!0,additionalContext:printPermissionDeniedMessage(e)}}'
+export const CONFIRM_ANCHOR =
+  'confirmTool:__name(async({risk:t})=>void 0!==t?"deny":e.autoAllow?"allow":"deny","confirmTool")'
 
 /**
- * Replacement arrow function.
+ * Replacement `confirmTool`.
  *
  * Constraints imposed by the injection site:
  *   - no `__name` (the wrapper is kept) and no top-level imports, because the
  *     surrounding scope is a minified bundle
- *   - keeps the destructured `toolName` binding, plus the `toolCallId`/`input`
- *     fields the harness already passes through
- *   - reuses `printPermissionDeniedMessage` from the same scope, so the
- *     default message stays identical to the unpatched bundle
+ *   - the provider is imported lazily inside the call, so a session that never
+ *     triggers a prompt never pays for it
+ *   - any failure falls through to the original stub: an unreachable provider
+ *     must not silently grant access
+ *
+ * `risk` is preserved as structured data (`{kind, detail}`) rather than being
+ * flattened, so a policy layer can later distinguish "the user asked to be
+ * prompted for this tool" from "this operation is inherently risky".
  */
-export const GATE_ARROW_REPLACEMENT = [
-  "async({toolName:e,toolCallId:t,input:n})=>{",
-  "if(!DE.has(e))return;",
-  'const{resolvePermissionProvider:i}=await import(new URL("./cmd-acp-permission/provider.mjs",import.meta.url).href);',
-  "const r=i(printPermissionDeniedMessage),o=await r.check({toolName:e,toolCallId:t,input:n,sessionId:process.env.COMMAND_CODE_SESSION});",
-  'if(o&&(o.type==="allow"||o.type==="always_allow"))return;',
-  "return{block:!0,additionalContext:(o&&o.message)||printPermissionDeniedMessage(e)}}",
+export const CONFIRM_REPLACEMENT = [
+  "confirmTool:__name(async(a)=>{",
+  "try{",
+  'const{resolvePermissionProvider:n}=await import(new URL("./cmd-acp-permission/provider.mjs",import.meta.url).href);',
+  "const r=n(printPermissionDeniedMessage),o=await r.check({toolName:a&&a.toolName,input:a&&a.input,description:a&&a.description,risk:a&&a.risk,explain:a&&a.explain});",
+  // Only an explicit allow allows; anything else keeps the built-in rules, so
+  // an absent or undecided provider does not become a blanket denial.
+  'if(o&&o.type==="allow")return"allow";',
+  'if(o&&o.type==="deny"&&o.explicit)return"deny"',
+  "}catch(i){}",
+  'return void 0!==(a&&a.risk)?"deny":e.autoAllow?"allow":"deny"',
+  '},"confirmTool")',
 ].join("")
+
+/**
+ * Legacy gate, kept only for detection.
+ *
+ * Present in the bundle but no longer part of the decision path: the
+ * permission engine answers through `confirmTool`. Reported by `--check` so a
+ * future release that starts using it again is visible rather than silent.
+ */
+export const LEGACY_GATE_ANCHOR =
+  'beforeToolCall:__name(async({toolName:e})=>{if(DE.has(e))return{block:!0,additionalContext:printPermissionDeniedMessage(e)}},"beforeToolCall")'
 
 /** Marker present only in a patched bundle. */
 export const PATCH_MARKER = "cmd-acp-permission/provider.mjs"
@@ -101,26 +122,29 @@ function countOccurrences(haystack, needle) {
 /**
  * Apply the patch to a source string.
  *
- * Returns `{ source, status, anchorCount }` rather than throwing, so callers
- * can tell "patched now", "already patched" and "anchor not found" apart.
+ * Returns `{ source, status, anchorCount, legacyGatePresent }` rather than
+ * throwing, so callers can tell "patched now", "already patched" and "anchor
+ * not found" apart.
  */
 export function patchSource(source) {
-  const anchorCount = countOccurrences(source, GATE_ARROW_ANCHOR)
+  const anchorCount = countOccurrences(source, CONFIRM_ANCHOR)
   const alreadyPatched = source.includes(PATCH_MARKER)
+  const legacyGatePresent = source.includes(LEGACY_GATE_ANCHOR)
 
   if (anchorCount === 0 && alreadyPatched) {
-    return { source, status: "already-patched", anchorCount }
+    return { source, status: "already-patched", anchorCount, legacyGatePresent }
   }
   if (anchorCount === 0) {
-    return { source, status: "anchor-not-found", anchorCount }
+    return { source, status: "anchor-not-found", anchorCount, legacyGatePresent }
   }
   if (anchorCount > 1) {
-    return { source, status: `anchor-ambiguous(${anchorCount})`, anchorCount }
+    return { source, status: `anchor-ambiguous(${anchorCount})`, anchorCount, legacyGatePresent }
   }
   return {
-    source: source.replace(GATE_ARROW_ANCHOR, GATE_ARROW_REPLACEMENT),
+    source: source.replace(CONFIRM_ANCHOR, CONFIRM_REPLACEMENT),
     status: "patched",
     anchorCount,
+    legacyGatePresent,
   }
 }
 
@@ -137,7 +161,6 @@ function providerSourceDir() {
  * @param {boolean} [options.check] Report only; write nothing.
  * @param {string} [options.output] Write the patched bundle here instead of
  *   patching in place. The CLI itself is never modified in this mode.
- * @returns {{cliPath:string,status:string,anchorCount:number,installed:string[],sha256Before?:string,sha256After?:string}}
  */
 export function applyPatch(options = {}) {
   const commandCodeDir = resolveCommandCodeDir(options.commandCodeDir)
@@ -147,13 +170,13 @@ export function applyPatch(options = {}) {
   }
 
   const original = readFileSync(sourceCli, "utf8")
-  const { source, status, anchorCount } = patchSource(original)
+  const { source, status, anchorCount, legacyGatePresent } = patchSource(original)
 
   if (status === "anchor-not-found") {
     throw new Error(
-      "The permission-gate anchor no longer matches. Command Code changed its " +
-        "gate body; re-derive GATE_ARROW_ANCHOR from the new bundle before " +
-        "patching. Search for: print-permission-gate",
+      "The confirmTool anchor no longer matches. Command Code changed its " +
+        "headless interaction stub; re-derive CONFIRM_ANCHOR from the new " +
+        "bundle before patching. Search for: headlessInteraction",
     )
   }
   if (status.startsWith("anchor-ambiguous")) {
@@ -161,11 +184,11 @@ export function applyPatch(options = {}) {
   }
 
   const cliPath = options.output ?? sourceCli
-  const report = { cliPath, status, anchorCount, installed: [] }
+  const report = { cliPath, status, anchorCount, legacyGatePresent, installed: [] }
 
   if (options.check) return report
 
-  // Where the provider modules go: beside whichever bundle we produce, so the
+  // The provider module must sit beside whichever bundle we produce, so the
   // injected dynamic import resolves without any path configuration.
   const providerDir = join(dirname(cliPath), PROVIDER_DIR_NAME)
   const srcDir = providerSourceDir()
@@ -187,7 +210,7 @@ export function applyPatch(options = {}) {
   }
 
   if (status === "already-patched" && options.output) {
-    // Still hand back an identical copy so callers get a usable bundle.
+    // Still hand back a usable bundle so callers get a runnable copy.
     writeFileSync(cliPath, source)
     return report
   }
@@ -219,6 +242,9 @@ function main() {
     console.log(`cli.mjs        : ${report.cliPath}`)
     console.log(`anchor matches : ${report.anchorCount}`)
     console.log(`status         : ${report.status}`)
+    console.log(
+      `legacy gate    : ${report.legacyGatePresent ? "present (left untouched)" : "absent"}`,
+    )
     for (const file of report.installed) console.log(`installed      : ${file}`)
     if (report.sha256Before) {
       console.log(`sha256 before  : ${report.sha256Before}`)

@@ -1,18 +1,18 @@
 /**
- * Bootstrap for the patched permission gate.
+ * Bootstrap for the patched permission check.
  *
- * The gate is injected into Command Code's minified bundle, which has no
- * import surface of its own. So the gate dynamically imports this module and
- * asks it for a provider, caching the result per process.
+ * The replacement `confirmTool` is injected into Command Code's minified
+ * bundle, which has no import surface of its own, so it dynamically imports
+ * this module and asks it for a provider. The result is cached per process.
  *
  * Provider selection is purely environment driven:
  *
- *   CMD_ACP_PERMISSION_BROKER unset  -> ConsolePermissionProvider (built-in)
+ *   CMD_ACP_PERMISSION_BROKER unset  -> ConsolePermissionProvider (no opinion)
  *   CMD_ACP_PERMISSION_BROKER set    -> BrokerPermissionProvider over IPC
  *
- * `denyMessage` is passed in by the gate because the bundle's own
+ * `denyMessage` is passed in by the caller because the bundle's own
  * `printPermissionDeniedMessage` is not importable; this keeps the default
- * refusal text byte-identical to the unpatched behaviour.
+ * refusal text identical to the unpatched behaviour.
  */
 
 import {

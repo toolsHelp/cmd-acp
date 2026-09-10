@@ -1,7 +1,8 @@
-/** Type declarations for the Command Code permission-gate patcher (plain ESM). */
+/** Type declarations for the Command Code permission patcher (plain ESM). */
 
-export declare const GATE_ARROW_ANCHOR: string
-export declare const GATE_ARROW_REPLACEMENT: string
+export declare const CONFIRM_ANCHOR: string
+export declare const CONFIRM_REPLACEMENT: string
+export declare const LEGACY_GATE_ANCHOR: string
 export declare const PATCH_MARKER: string
 export declare const PROVIDER_DIR_NAME: string
 
@@ -15,6 +16,8 @@ export interface PatchResult {
   source: string
   status: PatchStatus
   anchorCount: number
+  /** True when the dead legacy gate was found (it is never modified). */
+  legacyGatePresent: boolean
 }
 
 export interface ApplyOptions {
@@ -29,6 +32,7 @@ export interface ApplyReport {
   cliPath: string
   status: PatchStatus
   anchorCount: number
+  legacyGatePresent: boolean
   installed: string[]
   sha256Before?: string
   sha256After?: string
