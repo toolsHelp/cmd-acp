@@ -30,6 +30,7 @@ import type {
   PermissionRequestContext,
   PermissionRequestHandler,
 } from "./provider.js"
+import { tracePermission } from "./trace.js"
 
 /** Option ids cmd-acp issues; the `kind` carries the semantics. */
 export const OPTION_IDS = {
@@ -161,6 +162,14 @@ export class ACPPermissionHandler implements PermissionRequestHandler {
 
   async handle(ctx: PermissionRequestContext): Promise<PermissionDecision> {
     const params = buildPermissionParams(this.options.sessionId, ctx)
+    tracePermission("request", {
+      requestId: ctx.requestId,
+      toolCallId: ctx.toolCallId,
+      toolName: ctx.toolName,
+      sessionId: this.options.sessionId,
+      params,
+    })
+
     let response: RequestPermissionResponse
     try {
       response = await this.client.request(
@@ -170,8 +179,12 @@ export class ACPPermissionHandler implements PermissionRequestHandler {
       )
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
+      tracePermission("error", { requestId: ctx.requestId, message })
       return { result: "deny", reason: `Permission request failed: ${message}` }
     }
-    return mapACPOutcome(response)
+
+    const decision = mapACPOutcome(response)
+    tracePermission("response", { requestId: ctx.requestId, response, decision })
+    return decision
   }
 }
