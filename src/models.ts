@@ -9,6 +9,11 @@ export interface ModelInfo {
   description?: string
 }
 
+/**
+ * Timeout for `cmd --list-models`.
+ */
+export const LIST_TIMEOUT_MS = 30_000
+
 const CACHE_TTL_MS = 60_000
 
 let cachedModels: ModelInfo[] | null = null
@@ -50,22 +55,40 @@ export function parseModelsOutput(raw: string): ModelInfo[] {
   return models
 }
 
-/** Resolve the model list from `cmd --list-models`, cached for CACHE_TTL_MS. */
+/**
+ * Resolve the model list from `cmd --list-models`, cached for CACHE_TTL_MS.
+ *
+ * A failed refresh keeps the previous list rather than reporting none: the
+ * command is slow enough to time out under load, and losing the model picker
+ * because of a transient failure is worse than showing a stale one. Only the
+ * very first failure — when there is nothing to fall back to — rejects.
+ */
 export async function listModels(): Promise<ModelInfo[]> {
   const now = Date.now()
   if (cachedModels && now - cacheFetchedAt < CACHE_TTL_MS) {
     return cachedModels
   }
   const { command, argsPrefix } = resolveCmdSpawn()
-  const raw = await new Promise<string>((resolve, reject) => {
-    execFile(command, [...argsPrefix, "--list-models"], { timeout: 10_000 }, (err, stdout) => {
-      if (err) {
-        reject(err)
-        return
-      }
-      resolve(stdout)
+  let raw: string
+  try {
+    raw = await new Promise<string>((resolve, reject) => {
+      execFile(
+        command,
+        [...argsPrefix, "--list-models"],
+        { timeout: LIST_TIMEOUT_MS },
+        (err, stdout) => {
+          if (err) {
+            reject(err)
+            return
+          }
+          resolve(stdout)
+        },
+      )
     })
-  })
+  } catch (err) {
+    if (cachedModels) return cachedModels
+    throw err
+  }
   cachedModels = parseModelsOutput(raw)
   cacheFetchedAt = now
   return cachedModels

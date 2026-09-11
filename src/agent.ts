@@ -97,8 +97,15 @@ async function buildConfigOptions(
         })),
       })
     }
-  } catch {
-    // `cmd --list-models` failed (auth, missing binary) — omit the model select.
+  } catch (err) {
+    // Dropping the model select silently is how "the model list disappeared"
+    // becomes undiagnosable: the client just sees one fewer option. Report it
+    // on stderr — the ACP stream on stdout must stay clean — and keep going.
+    process.stderr.write(
+      `[cmd-acp] model list unavailable: ${
+        err instanceof Error ? err.message : String(err)
+      }\n`,
+    )
   }
 
   options.push({
