@@ -12,6 +12,15 @@ export interface Session {
   cmdSessionId?: string
   /** True once a prompt has been sent (enables --resume on later turns). */
   hasPrompted: boolean
+  /**
+   * Set when the session mode changes, consumed by the next prompt.
+   *
+   * `--resume` restores the mode the session was created with, so switching
+   * from plan to normal and resuming would resume a plan-mode session and
+   * ignore the new mode. Starting the next turn fresh makes the change take
+   * effect; later turns resume as usual.
+   */
+  skipResumeOnce: boolean
   /** Cleanup for the materialized .mcp.json (MCP passthrough). */
   cleanupMcp?: () => void
   /** Live permission broker for this session, while a turn is running. */
@@ -23,7 +32,14 @@ export class SessionStore {
 
   create(cwd: string): Session {
     const id = randomUUID()
-    const session: Session = { id, cwd, config: {}, promptAbort: null, hasPrompted: false }
+    const session: Session = {
+      id,
+      cwd,
+      config: {},
+      promptAbort: null,
+      hasPrompted: false,
+      skipResumeOnce: false,
+    }
     this.sessions.set(id, session)
     return session
   }
@@ -52,10 +68,12 @@ export class SessionStore {
       case "permission_mode":
         session.config.permissionMode = value === "yolo" ? "yolo" : "safe"
         break
-      case "mode":
+      case "mode": {
         // Single mode selector covering both session mode and permission
         // policy. `yolo` is the only value that permits edits/shell, and it is
         // mutually exclusive with `plan`.
+        const previous =
+          session.config.permissionMode === "yolo" ? "yolo" : (session.config.mode ?? "normal")
         switch (value) {
           case "yolo":
             session.config.permissionMode = "yolo"
@@ -72,7 +90,11 @@ export class SessionStore {
           default:
             throw new Error(`mode must be 'normal', 'plan' or 'yolo'`)
         }
+        // A resumed session keeps the mode it started with, so a real change
+        // needs one fresh turn to take effect.
+        if (previous !== value && session.hasPrompted) session.skipResumeOnce = true
         break
+      }
       default:
         throw new Error(`Unknown config option: ${configId}`)
     }

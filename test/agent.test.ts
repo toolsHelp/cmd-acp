@@ -222,6 +222,46 @@ describe("cmd-acp ACP server (E2E over stdio)", () => {
     })
   })
 
+  test("a mode change applies on the next turn instead of resuming the old mode", async () => {
+    await withClient(async (ctx) => {
+      await ctx.request("initialize", {
+        protocolVersion: acp.PROTOCOL_VERSION,
+      })
+      const session = await ctx.buildSession(process.cwd()).start()
+
+      const turn = async () => {
+        const respPromise = session.prompt("go")
+        let message = await session.nextUpdate()
+        const chunks: string[] = []
+        while (message.kind !== "stop") {
+          if (message.kind === "session_update" && message.update?.sessionUpdate === "agent_message_chunk") {
+            chunks.push(blockText(message.update.content))
+          }
+          message = await session.nextUpdate()
+        }
+        await respPromise
+        return chunks.join("")
+      }
+
+      // First turn in plan mode: no prior session to resume.
+      await ctx.request("session/set_mode", { sessionId: session.sessionId, modeId: "plan" })
+      const first = await turn()
+      expect(first).toContain("(plan)")
+      expect(first).not.toContain("resumed=")
+
+      // Switching to normal must not resume: a resumed session keeps the mode
+      // it was created with, so resuming here would leave plan mode in force.
+      await ctx.request("session/set_mode", { sessionId: session.sessionId, modeId: "normal" })
+      const second = await turn()
+      expect(second).not.toContain("(plan)")
+      expect(second).not.toContain("resumed=")
+
+      // The following turn resumes again, so continuity is only lost once.
+      const third = await turn()
+      expect(third).toContain("resumed=fake-session-1")
+    })
+  })
+
   test("rejects an unknown mode", async () => {
     await withClient(async (ctx) => {
       await ctx.request("initialize", {

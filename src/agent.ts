@@ -213,11 +213,16 @@ export function registerHandlers(app: ReturnType<typeof acp.agent>, sessions: Se
           },
         })
 
-      // Continuity: from the 2nd turn onward, resume the previous cmd session.
+      // Continuity: from the 2nd turn onward, resume the previous cmd session
+      // — unless the mode just changed. A resumed session carries the mode it
+      // was created with, so resuming after a plan<->normal switch would keep
+      // the old mode (e.g. still refusing writes outside the plans directory).
+      // Starting one turn fresh applies the new mode; later turns resume again.
       const config = { ...session.config }
-      if (session.hasPrompted && session.cmdSessionId) {
+      if (session.hasPrompted && session.cmdSessionId && !session.skipResumeOnce) {
         config.resumeSessionId = session.cmdSessionId
       }
+      session.skipResumeOnce = false
 
       // Tool calls that have been announced but not yet resolved. Command Code
       // can end a turn with a tool still queued (e.g. it runs out of turns
