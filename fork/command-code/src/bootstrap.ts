@@ -1,9 +1,14 @@
 /**
- * Bootstrap for the patched permission check.
+ * Bootstrap for the patched permission checks.
  *
- * The replacement `confirmTool` is injected into Command Code's minified
- * bundle, which has no import surface of its own, so it dynamically imports
- * this module and asks it for a provider. The result is cached per process.
+ * The replacement `confirmTool` and `beforeToolCall` are injected into Command
+ * Code's minified bundle, which has no import surface of its own, so they
+ * dynamically import this module and ask it for a provider. The result is
+ * cached per process.
+ *
+ * Both hooks import the same module URL, so they share one `grantStore` and
+ * one provider: the decision gate records what the user chose, and the
+ * execution gate consumes it instead of prompting a second time.
  *
  * Provider selection is purely environment driven:
  *
@@ -14,6 +19,8 @@
  * `printPermissionDeniedMessage` is not importable; this keeps the default
  * refusal text identical to the unpatched behaviour.
  */
+
+export { grantStore } from "./grant-store.js"
 
 import {
   BrokerPermissionProvider,

@@ -2,7 +2,16 @@
 
 export declare const CONFIRM_ANCHOR: string
 export declare const CONFIRM_REPLACEMENT: string
-export declare const LEGACY_GATE_ANCHOR: string
+export declare const GATE_ANCHOR: string
+export declare const GATE_REPLACEMENT: string
+
+/**
+ * Builders for the replacements. The bundle is minified and its short names
+ * differ between releases, so the replacement is generated with whatever
+ * identifiers the anchor captured.
+ */
+export declare function buildConfirmReplacement(interactionVar: string): string
+export declare function buildGateReplacement(blockedSetVar: string): string
 export declare const PATCH_MARKER: string
 export declare const PROVIDER_DIR_NAME: string
 
@@ -10,14 +19,16 @@ export type PatchStatus =
   | "patched"
   | "already-patched"
   | "anchor-not-found"
+  | "partial"
   | `anchor-ambiguous(${number})`
 
 export interface PatchResult {
   source: string
   status: PatchStatus
-  anchorCount: number
-  /** True when the dead legacy gate was found (it is never modified). */
-  legacyGatePresent: boolean
+  /** Times the `confirmTool` anchor matched; 1 is expected. */
+  confirmAnchorCount: number
+  /** Times the `beforeToolCall` anchor matched; 1 is expected. */
+  gateAnchorCount: number
 }
 
 export interface ApplyOptions {
@@ -31,8 +42,8 @@ export interface ApplyOptions {
 export interface ApplyReport {
   cliPath: string
   status: PatchStatus
-  anchorCount: number
-  legacyGatePresent: boolean
+  confirmAnchorCount: number
+  gateAnchorCount: number
   installed: string[]
   sha256Before?: string
   sha256After?: string
