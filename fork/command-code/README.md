@@ -23,31 +23,55 @@ function headlessInteraction(e = {}) {
 prompt. `confirmTool` never consults anything external, so there is nothing to
 configure — the bundle has to be patched.
 
-### The verified decision path
+### Two checkpoints, not one
 
-Established with beacons against command-code 1.53.0:
+A sensitive tool is refused in **two** independent places, and both must agree:
 
 ```
 tool call
    |
-   v
-checkPermissions()
+   +--> checkPermissions --> permissions.check --> resolveDecision --> confirm
+   |                                                                      |
+   |                                                     (1) confirmTool   <-- decision
+   |                                                              |
+   |                                       allowance recorded in grantStore
    |
-   v
-permissions.check()          ruleset: allow / ask / deny
-   |
-   v
-resolveDecision()
-   |
-   v
-confirm()
-   |
-   v
-headlessInteraction.confirmTool()      <-- the only interactive hook
-   |
-   v
-tool_denied
+   +--> (2) beforeToolCall        <-- execution guard
+              |
+              v
+         execute / block
 ```
+
+**(1) `headlessInteraction.confirmTool`** is the only place print mode consults
+anyone. Unpatched:
+
+```js
+confirmTool: async ({risk}) =>
+  risk !== undefined ? "deny" : (e.autoAllow ? "allow" : "deny")
+```
+
+**(2) `createPrintPermissionGateMod.beforeToolCall`** blocks five tool families
+outright, without asking anyone and without seeing (1)'s verdict:
+
+```js
+BLOCKED = new Set(["edit_file", "write_file", "shell_command",
+                   "monitor_command", "kill_shell"])
+```
+
+Patching only (1) never lets a tool run — (2) blocks it afterwards. Both are
+patched. `--yolo` skips (2) entirely (`resolvePrintHarnessMods` returns `[]`),
+which is why `--yolo` can write.
+
+Argument shapes differ, and it matters (probed on a running bundle):
+
+| hook | argument keys |
+|---|---|
+| `confirmTool` | `toolName, input, description, signal, explain` — **no id** |
+| `beforeToolCall` | `toolCallId, toolName, input, state` |
+
+Because there is no shared id, (1) records its decision in a grant store keyed
+on `toolName` + a stable hash of the input, and (2) consumes it. One prompt,
+both gates satisfied. See `src/grant-store.ts`.
 
 When a tool matches an `ask` rule, Command Code attaches a structured reason:
 
@@ -55,35 +79,30 @@ When a tool matches an `ask` rule, Command Code attaches a structured reason:
 { "risk": { "kind": "ask-rule", "detail": "write_file" } }
 ```
 
-### `createPrintPermissionGateMod` is legacy
-
-An earlier release refused sensitive tools through a `beforeToolCall` mod
-(`createPrintPermissionGateMod`). As of 1.53 that mod is present in the bundle
-but no longer reaches a decision — the permission engine answers through
-`confirmTool` instead.
-
-The patcher therefore **detects it but never modifies it**. Rewriting dead code
-would hide the day it becomes live again.
-
 ## Layering
 
 ```
-headlessInteraction.confirmTool        (patched, one arrow function)
-        |
-        v
-  PermissionProvider                   src/permission-provider.ts
-        |
-   +----+-----------------+
-   |                      |
-ConsolePermissionProvider  BrokerPermissionProvider
-(no opinion: falls back    |
- to the built-in rules)    |
-                    PermissionTransport
-                           |
-                    IpcPermissionTransport   src/ipc-transport.ts
-                           |
-                    named pipe / unix socket
+(1) headlessInteraction.confirmTool \
+                                     >-- PermissionGrantStore (shared decision)
+(2) beforeToolCall (execution gate) /              |
+                                                   v
+                                        PermissionProvider
+                                          src/permission-provider.ts
+                                                   |
+                              +--------------------+--------------------+
+                              |                                         |
+              ConsolePermissionProvider                    BrokerPermissionProvider
+              (no opinion: falls back                                  |
+               to the built-in rules)                         PermissionTransport
+                                                                       |
+                                                          IpcPermissionTransport
+                                                             src/ipc-transport.ts
+                                                                       |
+                                                          named pipe / unix socket
 ```
+
+Both hooks dynamically import the same module URL, so **module scope is what
+makes the grant store shared** — no `globalThis` plumbing.
 
 Nothing above `PermissionTransport` knows about ACP, named pipes or any
 particular client. A future transport only has to implement:
@@ -140,8 +159,9 @@ says so. Verified cases:
 |---|---|
 | no broker configured | built-in rules apply (unchanged) |
 | unreachable broker | denied (fails closed) |
-| broker returns allow | tool runs |
-| broker returns deny | `tool_denied` |
+| broker returns allow | grant recorded; execution gate stands down; tool runs |
+| broker returns deny | `tool_denied`; execution gate never reached |
+| grant expired or decision gate bypassed | execution gate asks again (never assumes) |
 | non-risky tool | provider not consulted at all |
 
 ## Files
@@ -149,6 +169,7 @@ says so. Verified cases:
 ```
 src/permission-provider.ts   provider + decision + risk types, Console/Broker
 src/ipc-transport.ts         newline-delimited JSON over a local socket
+src/grant-store.ts           one-shot grants shared by the two hooks
 src/bootstrap.ts             env-driven provider selection (cached per process)
 ```
 
@@ -171,12 +192,31 @@ cannot result in a silently unpatched or mispatched bundle.
 
 ## Upstream re-anchoring
 
-When Command Code changes, locate the stub and re-derive the anchor:
+**The anchors are patterns, not literal strings.** The bundle is minified and
+its short identifiers are not stable across releases: Command Code updated
+itself 1.53.0 → 1.53.1 mid-session and the blocked-tool set went from `DE` to
+`OE`, which silently broke a literal anchor. The patterns capture the
+identifiers and the replacements reuse them, so the fallback compiles against
+whatever names the bundle actually uses.
+
+When Command Code changes, first look at what is actually in the bundle:
 
 ```bash
-grep -o 'confirmTool:__name(async({risk:[a-z]})[^}]*"confirmTool")' \
+# decision gate — its body contains quotes, so match lazily rather than [^"]*
+grep -o 'confirmTool:__name(async({risk:[a-zA-Z0-9_$]*}).*"confirmTool")' \
+  <command-code>/dist/cli.mjs
+
+# execution guard — the set name is not stable (DE in 1.53.0, OE in 1.53.1)
+grep -o 'beforeToolCall:__name(async({toolName:[a-zA-Z0-9_$]*}).*"beforeToolCall")' \
   <command-code>/dist/cli.mjs
 ```
 
-Only `CONFIRM_ANCHOR` in `tools/command-code-patch/patch.mjs` needs updating;
-no other file knows the bundle's shape.
+Both should print exactly one line. If either prints none or more than one,
+the bundle changed shape and the pattern needs re-deriving before patching.
+
+Then update `CONFIRM_ANCHOR_RE` / `GATE_ANCHOR_RE` in
+`tools/command-code-patch/patch.mjs` and the literal `*_ANCHOR` constants used
+by the tests. No other file knows the bundle's shape.
+
+`--check` reports how many times each anchor matched; the patcher refuses to
+apply when either count is not exactly 1.

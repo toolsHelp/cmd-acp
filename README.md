@@ -65,18 +65,30 @@ Or via npx:
 
 ## Permissions
 
-`cmd -p` is one-shot: there is **no interactive permission request** mid-turn
-(unlike native ACP agents such as OpenCode).
+`cmd -p` is one-shot, so by default there is **no interactive permission
+request** mid-turn (unlike native ACP agents such as OpenCode). With a
+**patched Command Code bundle** (see
+[Patching Command Code](#patching-command-code)), cmd-acp turns that refusal
+into a real `session/request_permission` call and the connected client decides.
 
-- **Safe mode (default)**: run `cmd` **without** `--yolo`. Command Code itself
-  blocks file edits and shell commands (fail-closed). The client sees tool calls
-  as a log, not as a prompt gate.
-- **`--yolo` mode**: opt-in via the `permission_mode` config option, for users
-  who want edits and shell execution without a gate.
+- **Safe mode (default)**: the client is asked before `edit_file`,
+  `write_file`, `shell_command`, `monitor_command` and `kill_shell`. Without a
+  patch, or with no broker reachable, Command Code keeps its own fail-closed
+  behaviour.
+- **`--yolo` mode**: opt-in via the `permission_mode` config option. Command
+  Code skips its execution guard entirely and no broker is started.
 - **Plan mode**: the `mode` config option (`plan`) runs `cmd -p --plan` for
-  read-only exploration.
+  read-only exploration. Command Code enforces this ahead of any permission
+  prompt — in plan mode, writes outside `~/.commandcode/plans/` are refused by
+  Command Code itself, not by this bridge.
 
-The client's own permission engine still applies at session level.
+Switching mode mid-session takes effect on the next prompt: a resumed Command
+Code session carries the mode it was created with, so cmd-acp starts one fresh
+turn after a change and resumes again afterwards.
+
+Full protocol — the two checkpoints inside Command Code, the broker wire
+format, and the ACP option mapping — lives in
+[`doc/architecture/permission-flow.md`](doc/architecture/permission-flow.md).
 
 ## Config options
 
@@ -94,6 +106,45 @@ The client's own permission engine still applies at session level.
 - **MCP passthrough**: MCP servers a client injects on `session/new` are written
   to a temporary `.mcp.json` in the session cwd (restored on close), so Command
   Code can use those tools.
+
+## Patching Command Code
+
+Interactive permissions need a patched Command Code bundle. The patch replaces
+two checkpoints that refuse sensitive tools in print mode, so both consult the
+provider before deciding. Command Code itself is never modified in place unless
+you ask for it.
+
+```bash
+bun run build:patcher
+
+# inspect first — writes nothing
+node tools/command-code-patch/patch.mjs <command-code-dir> --check
+
+# patch a copy, leaving the installed CLI alone
+node tools/command-code-patch/patch.mjs <command-code-dir> \
+  --output fork/cc/dist/cli.mjs
+```
+
+Then point the bridge at it:
+
+```bash
+CMD_ENTRY=/path/to/fork/cc/dist/cli.mjs
+```
+
+The patcher refuses to apply unless both anchors match exactly once, so an
+upstream change cannot silently produce a half-patched bundle. Anchors are
+patterns that follow the bundle's minified identifiers rather than assuming
+them.
+
+- `CMD_ACP_PERMISSION_BROKER` is injected automatically by cmd-acp; an
+  unpatched Command Code simply never connects.
+- `CMD_ACP_PERMISSION_TRACE=<path>` appends one JSON line per permission
+  request, response and error. Off by default.
+
+See [`fork/command-code/README.md`](fork/command-code/README.md) for the
+provider layering and
+[`doc/architecture/permission-flow.md`](doc/architecture/permission-flow.md)
+for the full protocol.
 
 ## Standalone binaries
 
