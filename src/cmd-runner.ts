@@ -244,6 +244,10 @@ export async function runCmdPrompt(opts: {
       ...(sessionId ? { COMMAND_CODE_SESSION: sessionId } : {}),
     },
     stdio: ["ignore", "pipe", "pipe"],
+    // Windows gives every child its own console window unless told otherwise.
+    // One turn spawns one Command Code process, so without this a conversation
+    // flashes a black window on every prompt. Pipes are unaffected.
+    windowsHide: true,
   })
   if (!child.stdout || !child.stderr) {
     throw new Error("Failed to spawn cmd: missing stdio streams")

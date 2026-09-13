@@ -75,7 +75,9 @@ export async function listModels(): Promise<ModelInfo[]> {
       execFile(
         command,
         [...argsPrefix, "--list-models"],
-        { timeout: LIST_TIMEOUT_MS },
+        // Same reason as cmd-runner: without this, refreshing the model list
+        // pops a console window on Windows.
+        { timeout: LIST_TIMEOUT_MS, windowsHide: true },
         (err, stdout) => {
           if (err) {
             reject(err)
