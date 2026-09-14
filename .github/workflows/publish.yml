@@ -20,6 +20,7 @@ jobs:
       - run: bun run typecheck
       - run: bun test
       - run: bun run build
+      - run: bun run build:patcher
       - name: Publish to npm
         run: |
           npm config set //registry.npmjs.org/:_authToken=${NPM_TOKEN}

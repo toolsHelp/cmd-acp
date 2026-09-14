@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { runCmdPrompt, resolveCmdBinary, normalizeToolDenied } from "../src/cmd-runner.js"
+import { runCmdPrompt, resolveCmdBinary, resolveCmdSpawn, normalizeToolDenied } from "../src/cmd-runner.js"
 import { fileURLToPath } from "node:url"
 
 const fakeCmd = fileURLToPath(new URL("./fake-cmd.mjs", import.meta.url))
@@ -47,6 +47,48 @@ describe("normalizeToolDenied", () => {
     expect(normalizeToolDenied({ type: "tool_denied", toolName: "write_file" })).toBeNull()
     expect(normalizeToolDenied({ type: "tool_denied", toolCallId: "c" })).toBeNull()
     expect(normalizeToolDenied({ type: "tool_denied", toolCallId: "", toolName: "t" })).toBeNull()
+  })
+})
+
+describe("resolveCmdSpawn", () => {
+  test("honours CMD_ENTRY on every platform", () => {
+    process.env.CMD_ENTRY = fakeCmd
+    try {
+      expect(resolveCmdSpawn()).toEqual({ command: process.execPath, argsPrefix: [fakeCmd] })
+    } finally {
+      delete process.env.CMD_ENTRY
+    }
+  })
+
+  test("ignores a CMD_ENTRY pointing at nothing", () => {
+    const missing = `${fakeCmd}.missing`
+    process.env.CMD_ENTRY = missing
+    try {
+      // Falling through is fine; silently using the bogus entry is not.
+      expect(resolveCmdSpawn().argsPrefix).not.toContain(missing)
+    } finally {
+      delete process.env.CMD_ENTRY
+    }
+  })
+
+  test("runs a CMD_BIN .mjs entry with the current runtime", () => {
+    process.env.CMD_BIN = fakeCmd
+    try {
+      expect(resolveCmdSpawn()).toEqual({ command: process.execPath, argsPrefix: [fakeCmd] })
+    } finally {
+      delete process.env.CMD_BIN
+    }
+  })
+
+  test("lets CMD_BIN win, since it names the binary rather than the entry", () => {
+    process.env.CMD_ENTRY = fakeCmd
+    process.env.CMD_BIN = "/custom/cmd"
+    try {
+      expect(resolveCmdSpawn()).toEqual({ command: "/custom/cmd", argsPrefix: [] })
+    } finally {
+      delete process.env.CMD_ENTRY
+      delete process.env.CMD_BIN
+    }
   })
 })
 

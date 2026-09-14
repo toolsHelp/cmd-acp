@@ -24,6 +24,7 @@ import {
   symlinkSync,
 } from "node:fs"
 import { dirname, join, resolve } from "node:path"
+import { fileURLToPath } from "node:url"
 import { resolveCliPath, resolveCommandCodeDir } from "./command-code-patch/patch.mjs"
 
 const DEFAULT_WORKSPACE = "fork/cc"
@@ -36,10 +37,10 @@ function valueOf(args, flag) {
 /**
  * Point `linkPath` at `target`.
  *
- * An existing link is replaced only when it points elsewhere; a real directory
+ * An existing link is replaced only when it points elsewhere. A real directory
  * is left alone, because deleting it could destroy work this tool did not
- * create. A dangling link is replaced, which is the whole point: it is what a
- * Node upgrade leaves behind.
+ * create; a dangling link is replaced, which is the whole point — that is what
+ * a Node upgrade leaves behind.
  */
 function linkModules(target, linkPath) {
   let existing
@@ -50,7 +51,7 @@ function linkModules(target, linkPath) {
   }
 
   if (existing && !existing.isSymbolicLink()) {
-    return { status: "left-alone", reason: "exists and is not a symlink" }
+    return { status: "blocked" }
   }
 
   if (existing) {
@@ -71,30 +72,38 @@ function linkModules(target, linkPath) {
   return { status: "linked", target }
 }
 
-function main() {
-  const args = process.argv.slice(2)
-  const dirFlag = valueOf(args, "--dir")
-  const positional = args.filter((a) => !a.startsWith("--") && a !== dirFlag)
-
-  const commandCodeDir = resolveCommandCodeDir(positional[0])
+/**
+ * Prepare `workspace` to run a patched bundle built from `commandCodeDir`.
+ *
+ * Throws rather than exiting so callers (and tests) can react; the CLI wrapper
+ * below turns a throw into a message and a non-zero exit.
+ */
+export function linkForkDeps(options = {}) {
+  const commandCodeDir = resolveCommandCodeDir(options.commandCodeDir)
   const cliPath = resolveCliPath(commandCodeDir)
   if (!existsSync(cliPath)) {
-    console.error(`Command Code bundle not found at ${cliPath}`)
-    console.error("Pass the Command Code package directory, or set COMMAND_CODE_DIR.")
-    process.exit(1)
+    throw new Error(
+      `Command Code bundle not found at ${cliPath}. Pass the Command Code ` +
+        "package directory, or set COMMAND_CODE_DIR.",
+    )
   }
 
   const commandCodeModules = join(commandCodeDir, "node_modules")
   if (!existsSync(commandCodeModules)) {
-    console.error(
+    throw new Error(
       `No node_modules under ${commandCodeDir}. The bundle imports its ` +
         "dependencies as bare specifiers, so they have to be installed there.",
     )
-    process.exit(1)
   }
 
-  const workspaceDir = resolve(dirFlag ?? DEFAULT_WORKSPACE)
-  mkdirSync(workspaceDir, { recursive: true })
+  const workspaceDir = resolve(options.workspace ?? DEFAULT_WORKSPACE)
+  const link = linkModules(commandCodeModules, join(workspaceDir, "node_modules"))
+  if (link.status === "blocked") {
+    throw new Error(
+      `${join(workspaceDir, "node_modules")} exists and is not a symlink. Move ` +
+        "it aside so the bundle resolves against Command Code's own dependencies.",
+    )
+  }
 
   const packageJson = join(commandCodeDir, "package.json")
   const packageJsonStatus = existsSync(packageJson) ? "copied" : "missing at source"
@@ -102,24 +111,31 @@ function main() {
     copyFileSync(packageJson, join(workspaceDir, "package.json"))
   }
 
-  const link = linkModules(commandCodeModules, join(workspaceDir, "node_modules"))
-
-  console.log(`command-code : ${commandCodeDir}`)
-  console.log(`workspace    : ${workspaceDir}`)
-  console.log(`package.json : ${packageJsonStatus}`)
-  console.log(
-    `node_modules : ${link.status}` +
-      (link.target ? ` -> ${link.target}` : "") +
-      (link.reason ? ` (${link.reason})` : ""),
-  )
-
-  if (link.status === "left-alone") {
-    console.error(
-      "Refusing to finish: a real node_modules directory is in the way. Move " +
-        "it aside and re-run so the bundle resolves against Command Code's own.",
-    )
-    process.exit(1)
-  }
+  return { commandCodeDir, workspaceDir, packageJsonStatus, link }
 }
 
-main()
+function main() {
+  const args = process.argv.slice(2)
+  const dirFlag = valueOf(args, "--dir")
+  const positional = args.filter((a) => !a.startsWith("--") && a !== dirFlag)
+
+  let report
+  try {
+    report = linkForkDeps({ commandCodeDir: positional[0], workspace: dirFlag })
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error))
+    process.exit(1)
+  }
+
+  console.log(`command-code : ${report.commandCodeDir}`)
+  console.log(`workspace    : ${report.workspaceDir}`)
+  console.log(`package.json : ${report.packageJsonStatus}`)
+  console.log(
+    `node_modules : ${report.link.status}` +
+      (report.link.target ? ` -> ${report.link.target}` : ""),
+  )
+}
+
+if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+  main()
+}

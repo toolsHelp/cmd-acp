@@ -33,6 +33,14 @@ Override the `cmd` / `cmd-acp` binaries with env vars if needed:
 CMD_BIN=/path/to/cmd CMD_ACP_BIN=/path/to/cmd-acp cmd-acp
 ```
 
+From a clone — for development, or to use the permission flow, which needs a
+patched Command Code bundle (see [Patching Command Code](#patching-command-code)):
+
+```bash
+bun install
+bun run build:all    # dist/, the injected provider, and the fork/cc deps link
+```
+
 ## Usage in an ACP client
 
 Point your ACP client at the `cmd-acp` binary:
@@ -141,7 +149,13 @@ a fixed path.
 The patcher refuses to apply unless both anchors match exactly once, so an
 upstream change cannot silently produce a half-patched bundle. Anchors are
 patterns that follow the bundle's minified identifiers rather than assuming
-them.
+them. `<command-code-dir>` is any directory holding a Command Code install; it
+is probed for a global npm install when omitted, so pass it (or set
+`COMMAND_CODE_DIR`) only if Command Code lives somewhere unusual.
+
+`CMD_ENTRY` is what makes the permission flow reachable: the stock Command Code
+refuses sensitive tools without asking, so with an unpatched bundle the feature
+is silently absent rather than visibly broken. It is honoured on every platform.
 
 - `CMD_ACP_PERMISSION_BROKER` is injected automatically by cmd-acp; an
   unpatched Command Code simply never connects.
@@ -166,8 +180,9 @@ Pre-compiled standalone binaries (no Node runtime needed) are attached to each
 
 ```bash
 bun install
-bun test          # deterministic fake CLI — no real cmd needed
-bun run build     # bundle to dist/
+bun test            # deterministic fake CLI — no real cmd needed
+bun run build       # bundle to dist/
+bun run build:all   # + the patcher's provider bundle and the fork/cc deps link
 ```
 
 ## License

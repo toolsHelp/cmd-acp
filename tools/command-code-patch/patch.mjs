@@ -164,12 +164,36 @@ export const PROVIDER_DIR_NAME = "cmd-acp-permission"
 /** File copied from this tool's `dist/` into the bundle's dist directory. */
 const PROVIDER_FILES = ["provider.mjs"]
 
+/**
+ * Where a global npm install of Command Code may live, most likely first.
+ *
+ * The layout is platform-specific: on Windows the global prefix *is* the Node
+ * install directory, while elsewhere packages land in `<prefix>/lib/node_modules`
+ * (nvm, system Node, Homebrew). None of these is guaranteed — a custom prefix or
+ * another package manager moves it — so this is a probe list, not a guess.
+ */
+function commandCodeCandidates() {
+  const nodeDir = dirname(process.execPath)
+  return [
+    join(nodeDir, "node_modules", "command-code"),
+    join(nodeDir, "..", "lib", "node_modules", "command-code"),
+    join(nodeDir, "..", "node_modules", "command-code"),
+  ]
+}
+
 /** Locate the Command Code package, allowing an explicit override. */
 export function resolveCommandCodeDir(explicit) {
   if (explicit) return explicit
   const fromEnv = process.env.COMMAND_CODE_DIR?.trim()
   if (fromEnv) return fromEnv
-  return join(dirname(process.execPath), "node_modules", "command-code")
+
+  const candidates = commandCodeCandidates()
+  const found = candidates.find((dir) => existsSync(join(dir, "dist", "cli.mjs")))
+  if (found) return found
+
+  // Nothing matched; hand back the platform's usual location so the error the
+  // caller prints points somewhere plausible instead of at a Windows path.
+  return process.platform === "win32" ? candidates[0] : candidates[1]
 }
 
 /** Absolute path to the bundled CLI. */

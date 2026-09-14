@@ -143,13 +143,18 @@ export interface CmdSpawn {
 /**
  * Locate the Command Code ESM entry (`command-code/dist/index.mjs`).
  *
- * Windows needs this: npm only installs `.cmd` shims, which cannot be launched
+ * `CMD_ENTRY` answers this on every platform. Failing that, Windows needs a
+ * heuristic: npm only installs `.cmd` shims there, which cannot be launched
  * with `CreateProcess` (Node's non-shell `spawn` fails with ENOENT), while a
- * bare `cmd` resolves to the OS `cmd.exe` instead of Command Code.
+ * bare `cmd` resolves to the OS `cmd.exe` instead of Command Code. Everywhere
+ * else the shim is executable, so the PATH fallback in {@link resolveCmdSpawn}
+ * is the better answer and no guess is made here.
  */
 function findCommandCodeEntry(): string | undefined {
   const fromEnv = process.env.CMD_ENTRY?.trim()
   if (fromEnv && existsSync(fromEnv)) return fromEnv
+
+  if (process.platform !== "win32") return undefined
 
   // Global install alongside the running Node runtime.
   const sibling = join(
@@ -182,9 +187,10 @@ export function resolveCmdSpawn(): CmdSpawn {
     return { command: override, argsPrefix: [] }
   }
 
+  const entry = findCommandCodeEntry()
+  if (entry) return { command: process.execPath, argsPrefix: [entry] }
+
   if (process.platform === "win32") {
-    const entry = findCommandCodeEntry()
-    if (entry) return { command: process.execPath, argsPrefix: [entry] }
     process.stderr.write(
       "[cmd-acp] warning: Command Code entry not found; falling back to 'cmd' on PATH " +
         "(on Windows this may resolve to C:\\Windows\\System32\\cmd.exe). " +
