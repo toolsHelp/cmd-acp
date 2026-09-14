@@ -37,6 +37,8 @@ export interface ApplyOptions {
   check?: boolean
   /** Write the patched bundle here instead of patching in place. */
   output?: string
+  /** Where the compiled provider lives. Defaults to the patcher's own `dist/`. */
+  providerSourceDir?: string
 }
 
 export interface ApplyReport {

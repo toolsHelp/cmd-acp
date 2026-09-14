@@ -1,10 +1,14 @@
-import { describe, expect, test } from "bun:test"
+import { afterEach, describe, expect, test } from "bun:test"
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { dirname, join } from "node:path"
 import {
   CONFIRM_ANCHOR,
   CONFIRM_REPLACEMENT,
   GATE_ANCHOR,
   GATE_REPLACEMENT,
   PATCH_MARKER,
+  applyPatch,
   buildConfirmReplacement,
   buildGateReplacement,
   patchSource,
@@ -162,5 +166,79 @@ describe("command-code permission patch", () => {
     expect(GATE_REPLACEMENT).not.toContain("import {")
     expect(CONFIRM_REPLACEMENT).toContain("await import(new URL(")
     expect(GATE_REPLACEMENT).toContain("await import(new URL(")
+  })
+})
+
+describe("applyPatch", () => {
+  let roots: string[] = []
+
+  function tmpDir(label: string): string {
+    const dir = mkdtempSync(join(tmpdir(), `cmd-acp-patch-${label}-`))
+    roots.push(dir)
+    return dir
+  }
+
+  /** A Command Code package whose bundle carries both checkpoints. */
+  function fakeBundle(): string {
+    const dir = tmpDir("cc")
+    mkdirSync(join(dir, "dist"), { recursive: true })
+    writeFileSync(join(dir, "dist", "cli.mjs"), BUNDLE)
+    return dir
+  }
+
+  function fakeProvider(): string {
+    const dir = tmpDir("provider")
+    writeFileSync(join(dir, "provider.mjs"), "export const grantStore = {}\n")
+    return dir
+  }
+
+  afterEach(() => {
+    for (const root of roots) rmSync(root, { recursive: true, force: true })
+    roots = []
+  })
+
+  test("installs the provider beside the bundle it patches", () => {
+    const output = join(tmpDir("out"), "dist", "cli.mjs")
+
+    const report = applyPatch({
+      commandCodeDir: fakeBundle(),
+      output,
+      providerSourceDir: fakeProvider(),
+    })
+
+    expect(report.status).toBe("patched")
+    expect(report.installed).toHaveLength(1)
+    expect(existsSync(join(dirname(output), "cmd-acp-permission", "provider.mjs"))).toBe(true)
+    expect(existsSync(join(dirname(output), "cmd-acp-permission", "package.json"))).toBe(true)
+  })
+
+  test("refuses to write a bundle when the provider was never compiled", () => {
+    const output = join(tmpDir("out"), "dist", "cli.mjs")
+
+    expect(() =>
+      applyPatch({
+        commandCodeDir: fakeBundle(),
+        output,
+        providerSourceDir: join(tmpDir("empty"), "dist"),
+      }),
+    ).toThrow(/build:patcher/)
+
+    // The whole point of failing here: no half-patched bundle to run by mistake.
+    expect(existsSync(output)).toBe(false)
+  })
+
+  test("refuses when the provider directory exists but holds no provider", () => {
+    const output = join(tmpDir("out"), "dist", "cli.mjs")
+
+    expect(() =>
+      applyPatch({
+        commandCodeDir: fakeBundle(),
+        output,
+        providerSourceDir: tmpDir("partial"),
+      }),
+    ).toThrow(/provider\.mjs is missing/)
+
+    expect(existsSync(output)).toBe(false)
+    expect(existsSync(join(dirname(output), "cmd-acp-permission"))).toBe(false)
   })
 })

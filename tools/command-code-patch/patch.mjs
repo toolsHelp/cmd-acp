@@ -269,8 +269,8 @@ export function patchSource(source) {
 }
 
 /** Compiled providers live beside this script. */
-function providerSourceDir() {
-  return join(HERE, "dist")
+function providerSourceDir(override) {
+  return override ?? join(HERE, "dist")
 }
 
 /**
@@ -314,25 +314,33 @@ export function applyPatch(options = {}) {
   if (options.check) return report
 
   // The provider module must sit beside whichever bundle we produce, so the
-  // injected dynamic import resolves without any path configuration.
+  // injected dynamic import resolves without any path configuration. Missing it
+  // is fatal rather than skipped: the bundle imports the provider lazily, so a
+  // copy without one still starts and then refuses every sensitive tool — which
+  // looks exactly like the unpatched CLI.
   const providerDir = join(dirname(cliPath), PROVIDER_DIR_NAME)
-  const srcDir = providerSourceDir()
-  if (existsSync(srcDir)) {
-    mkdirSync(providerDir, { recursive: true })
-    for (const file of PROVIDER_FILES) {
-      const from = join(srcDir, file)
-      if (!existsSync(from)) continue
-      const to = join(providerDir, file)
-      copyFileSync(from, to)
-      report.installed.push(to)
-    }
-    if (report.installed.length > 0) {
-      writeFileSync(
-        join(providerDir, "package.json"),
-        JSON.stringify({ type: "module" }, null, 2),
+  const srcDir = providerSourceDir(options.providerSourceDir)
+  if (!existsSync(srcDir)) {
+    throw new Error(
+      `Provider bundle not found at ${srcDir}. Run "bun run build:patcher" before patching.`,
+    )
+  }
+
+  for (const file of PROVIDER_FILES) {
+    if (!existsSync(join(srcDir, file))) {
+      throw new Error(
+        `Provider bundle ${join(srcDir, file)} is missing; re-run "bun run build:patcher".`,
       )
     }
   }
+
+  mkdirSync(providerDir, { recursive: true })
+  for (const file of PROVIDER_FILES) {
+    const to = join(providerDir, file)
+    copyFileSync(join(srcDir, file), to)
+    report.installed.push(to)
+  }
+  writeFileSync(join(providerDir, "package.json"), JSON.stringify({ type: "module" }, null, 2))
 
   if (status === "already-patched" && options.output) {
     // Still hand back a usable bundle so callers get a runnable copy.
