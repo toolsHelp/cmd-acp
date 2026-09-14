@@ -15,10 +15,12 @@ npm-debug.log*
 # OS
 .DS_Store
 
+# Editors
+.idea/
+
 # Test artifacts
 .mcp.json
 .mcp.json.cmd-acp.bak
 
 # Local fork workspace (patched bundle copies + linked deps)
 fork/cc/
-fork/test/
