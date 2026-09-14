@@ -115,7 +115,8 @@ provider before deciding. Command Code itself is never modified in place unless
 you ask for it.
 
 ```bash
-bun run build:patcher
+bun run build:patcher    # compile the provider the patch injects
+bun run link:fork-deps   # let the output directory resolve Command Code's deps
 
 # inspect first — writes nothing
 node tools/command-code-patch/patch.mjs <command-code-dir> --check
@@ -130,6 +131,12 @@ Then point the bridge at it:
 ```bash
 CMD_ENTRY=/path/to/fork/cc/dist/cli.mjs
 ```
+
+`bun run build:all` runs both preparation steps above, plus the `dist/` build.
+The patched bundle is a copy of Command Code's own, so it resolves dependencies
+through the linked `node_modules`; re-run `link:fork-deps` after switching Node
+versions, since the link follows the running Node's install directory rather than
+a fixed path.
 
 The patcher refuses to apply unless both anchors match exactly once, so an
 upstream change cannot silently produce a half-patched bundle. Anchors are

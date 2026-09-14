@@ -260,8 +260,8 @@ export CMD_ACP_PERMISSION_TRACE=/tmp/perm.jsonl
 export CMD_ACP_PERMISSION_TIMEOUT_MS=0   # wait for the user indefinitely
 ```
 
-To see the whole path, including the ACP frames, run the agent through
-`C:/Users/wucy0/acp-probe/probe.js` (records to `logs/trace.jsonl`).
+To see the whole path, including the ACP frames, interpose a stdio shim between
+the client and the bridge that records inbound and outbound JSON-RPC lines.
 
 Regenerating a patched bundle:
 

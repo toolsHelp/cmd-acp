@@ -10,7 +10,10 @@
   "files": [
     "dist",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "tools",
+    "fork/command-code",
+    "doc/architecture"
   ],
   "engines": {
     "node": ">=22"
@@ -19,9 +22,10 @@
     "access": "public"
   },
   "scripts": {
-    "build": "bun build src/index.ts --outdir dist --target node",
+    "build": "bun build src/index.ts --outdir dist --target node && chmod +x dist/index.js",
     "build:patcher": "bun build fork/command-code/src/bootstrap.ts --outfile tools/command-code-patch/dist/provider.mjs --target node --format esm",
-    "build:all": "bun run build && bun run build:patcher",
+    "link:fork-deps": "node tools/link-fork-deps.mjs",
+    "build:all": "bun run build && bun run build:patcher && bun run link:fork-deps",
     "typecheck": "tsc --noEmit",
     "test": "bun test"
   },
