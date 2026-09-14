@@ -11,8 +11,9 @@ Command Code already has a full permission engine — five modes (`default`,
 It also has `PreToolUse` hooks. What it has no surface for is answering a prompt
 at runtime: the rule lists are static policy, and a hook can only veto. Probed on
 1.54.0, a hook returning `permissionDecision: "allow"` does **not** let a
-`write_file` past the engine's refusal, while `"deny"` does block it. Nothing can
-hand an `ask` to an external party and take a live answer back.
+`write_file` past the engine's refusal, while `"deny"` does block it — the raw
+frames are recorded in [`doc/permission-probe.md`](../../doc/permission-probe.md).
+Nothing can hand an `ask` to an external party and take a live answer back.
 
 In headless (`-p`) mode the decision therefore falls to a stub inside
 `headlessInteraction(...)`:

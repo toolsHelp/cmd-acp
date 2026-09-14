@@ -13,7 +13,7 @@
     "LICENSE",
     "tools",
     "fork/command-code",
-    "doc/architecture"
+    "doc"
   ],
   "engines": {
     "node": ">=22"
