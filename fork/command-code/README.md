@@ -5,8 +5,16 @@ Adds a pluggable permission decision source to Command Code's headless
 
 ## Why a patch is needed
 
-Command Code has no configuration or plugin surface that can answer a
-permission prompt in print mode. The decision is produced by a stub inside
+Command Code already has a full permission engine — five modes (`default`,
+`auto-accept`, `plan`, `bypass`, `dont-ask`), `permissions.deny` / `ask` /
+`allow` rule lists, and safety gates for sensitive writes and root/home removal.
+It also has `PreToolUse` hooks. What it has no surface for is answering a prompt
+at runtime: the rule lists are static policy, and a hook can only veto. Probed on
+1.54.0, a hook returning `permissionDecision: "allow"` does **not** let a
+`write_file` past the engine's refusal, while `"deny"` does block it. Nothing can
+hand an `ask` to an external party and take a live answer back.
+
+In headless (`-p`) mode the decision therefore falls to a stub inside
 `headlessInteraction(...)`:
 
 ```js
@@ -20,8 +28,9 @@ function headlessInteraction(e = {}) {
 ```
 
 `askQuestion` picking the first option is why an unattended run never shows a
-prompt. `confirmTool` never consults anything external, so there is nothing to
-configure — the bundle has to be patched.
+prompt. `confirmTool` never consults anything external, so every call the engine
+cannot resolve statically fails closed, and a patch is the only way to give it a
+decision source.
 
 ### Two checkpoints, not one
 
